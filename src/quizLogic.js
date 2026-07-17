@@ -26,6 +26,28 @@ export function answerMatches(question, selected = []) {
   return actual.every((value, index) => value === expected[index])
 }
 
+export function buildQuestionReview(question, selected = []) {
+  const selectedSet = new Set(selected)
+  const correctSet = new Set(question.answers)
+  const selectedLabels = selected
+    .filter(index => question.options[index])
+    .map(index => question.options[index])
+  const correctLabels = question.answers.map(index => question.options[index])
+
+  return {
+    id: question.id,
+    isCorrect: answerMatches(question, selected),
+    isAnswered: selected.length > 0,
+    selectedLabels,
+    correctLabels,
+    options: question.options.map((label, index) => ({
+      label,
+      isSelected: selectedSet.has(index),
+      isCorrect: correctSet.has(index),
+    })),
+  }
+}
+
 export function sampleWeighted(questions, count) {
   const domains = Object.keys(DOMAIN_META)
   const chosen = []

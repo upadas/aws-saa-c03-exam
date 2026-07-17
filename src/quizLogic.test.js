@@ -4,6 +4,7 @@ import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
   answerMatches,
+  buildQuestionReview,
   formatTime,
   sampleWeighted,
   validateQuestionSets,
@@ -22,6 +23,31 @@ test('answerMatches treats multiple-response answers as order independent', () =
   assert.equal(answerMatches(question, [3, 1]), true)
   assert.equal(answerMatches(question, [1]), false)
   assert.equal(answerMatches(question, [1, 2]), false)
+})
+
+test('buildQuestionReview summarizes selected and correct answers', () => {
+  const question = {
+    id: 42,
+    answers: [0, 2],
+    options: ['Use an ALB', 'Use one instance', 'Span two AZs', 'Disable health checks'],
+  }
+
+  assert.deepEqual(buildQuestionReview(question, [2, 0]), {
+    id: 42,
+    isCorrect: true,
+    isAnswered: true,
+    selectedLabels: ['Span two AZs', 'Use an ALB'],
+    correctLabels: ['Use an ALB', 'Span two AZs'],
+    options: [
+      { label: 'Use an ALB', isSelected: true, isCorrect: true },
+      { label: 'Use one instance', isSelected: false, isCorrect: false },
+      { label: 'Span two AZs', isSelected: true, isCorrect: true },
+      { label: 'Disable health checks', isSelected: false, isCorrect: false },
+    ],
+  })
+
+  assert.equal(buildQuestionReview(question, []).isAnswered, false)
+  assert.equal(buildQuestionReview(question, []).isCorrect, false)
 })
 
 test('formatTime renders the SAA-C03 exam duration as 130:00', () => {

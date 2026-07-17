@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { 
   ArrowRight, Award, BookOpen, Check, CheckCircle2, ChevronLeft, ChevronRight,
-  Clock3, Cloud, Flag, LayoutDashboard, RotateCcw, Search, ShieldCheck,
+  Clock3, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search, ShieldCheck,
   Sparkles, Target, Timer, XCircle
 } from 'lucide-react'
 import { questions, questionSets } from './data/questionSets'
@@ -11,6 +11,7 @@ import {
   EXAM_DURATION_SECONDS,
   EXAM_QUESTION_COUNT,
   answerMatches,
+  buildQuestionReview,
   formatTime,
   sampleWeighted,
   shuffle,
@@ -77,6 +78,7 @@ function App() {
       {view === 'bank' && <QuestionBank query={bankQuery} setQuery={setBankQuery} domain={domainFilter} setDomain={setDomainFilter} mastered={mastered} setSaved={setSaved} startQuiz={startQuiz} />}
       {view === 'quiz' && session && <Quiz session={session} setSession={setSession} finishQuiz={finishQuiz} />}
       {view === 'result' && session?.result && <Results session={session} setView={setView} startQuiz={startQuiz} />}
+      {view === 'review' && session?.result && <Review session={session} setView={setView} startQuiz={startQuiz} />}
     </main>
   </div>
 }
@@ -288,7 +290,7 @@ function Results({ session, setView, startQuiz }) {
       <div className="score-ring" style={{'--score':`${pct*3.6}deg`}}><div><strong>{pct}%</strong><span>{r.correct}/{r.total}</span></div></div>
       <span>SESSION COMPLETE</span><h1>{pct>=80?'Architecture instincts: strong.':pct>=65?'You’re building momentum.':'Time to reinforce the foundations.'}</h1>
       <p>Review your domain breakdown, then focus the next session on your lowest-scoring area.</p>
-      <div><button className="primary" onClick={()=>startQuiz('practice',10)}><RotateCcw/> New practice</button><button className="secondary" onClick={()=>setView('bank')}><BookOpen/> Browse questions</button></div>
+      <div><button className="primary" onClick={()=>setView('review')}><ListChecks/> Review answers</button><button className="secondary" onClick={()=>startQuiz('practice',10)}><RotateCcw/> New practice</button><button className="secondary" onClick={()=>setView('bank')}><BookOpen/> Browse questions</button></div>
     </div>
     <section className="breakdown">
       <h2>Domain performance</h2>
@@ -296,6 +298,59 @@ function Results({ session, setView, startQuiz }) {
         const p=Math.round(d.correct/d.total*100)
         return <div className="break-row" key={d.domain}><div><strong>{d.domain}</strong><span>{d.correct} of {d.total} correct</span></div><div className="bar"><span style={{width:`${p}%`}}></span></div><b>{p}%</b></div>
       })}
+    </section>
+  </div>
+}
+
+function Review({ session, setView, startQuiz }) {
+  const reviews = session.questions.map((question, index) => ({
+    question,
+    index,
+    ...buildQuestionReview(question, session.answers[question.id] || []),
+  }))
+  const correct = reviews.filter(item => item.isCorrect).length
+  const unanswered = reviews.filter(item => !item.isAnswered).length
+
+  return <div className="page review-page">
+    <div className="review-header">
+      <div>
+        <span>SESSION REVIEW</span>
+        <h1>Review the set you just answered.</h1>
+        <p>{correct} of {reviews.length} correct{unanswered ? `, ${unanswered} unanswered` : ''}.</p>
+      </div>
+      <div>
+        <button className="secondary" onClick={() => setView('result')}><ChevronLeft/> Results</button>
+        <button className="primary" onClick={() => startQuiz('practice', 10)}><RotateCcw/> New practice</button>
+      </div>
+    </div>
+    <section className="review-list">
+      {reviews.map(item => <article className={`review-card ${item.isCorrect ? 'correct' : 'missed'}`} key={item.id}>
+        <header>
+          <div>
+            <span>QUESTION {item.index + 1}</span>
+            <div className="tags"><span>{DOMAIN_META[item.question.domain].short}</span><span>{item.question.difficulty}</span><span>{item.question.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
+          </div>
+          <strong>{item.isCorrect ? 'Correct' : item.isAnswered ? 'Review' : 'Unanswered'}</strong>
+        </header>
+        <h2>{item.question.question}</h2>
+        <div className="review-options">
+          {item.options.map((option, index) => {
+            const state = `${option.isSelected ? 'selected' : ''} ${option.isCorrect ? 'right' : ''} ${option.isSelected && !option.isCorrect ? 'wrong' : ''}`
+            return <div className={state} key={option.label}>
+              <span className="letter">{String.fromCharCode(65 + index)}</span>
+              <span>{option.label}</span>
+              <small>{option.isSelected && 'Your answer'}{option.isSelected && option.isCorrect && ' · '}{option.isCorrect && 'Correct answer'}</small>
+            </div>
+          })}
+        </div>
+        <div className={`answer-summary ${item.isCorrect ? 'correct' : 'incorrect'}`}>
+          <div>{item.isCorrect ? <CheckCircle2/> : <XCircle/>}<strong>{item.isCorrect ? 'You chose the correct answer.' : 'Correct answer'}</strong></div>
+          {!item.isCorrect && <p>{item.correctLabels.join('; ')}</p>}
+          {item.isAnswered && !item.isCorrect && <p><b>Your answer:</b> {item.selectedLabels.join('; ')}</p>}
+          {!item.isAnswered && <p><b>Your answer:</b> No answer selected</p>}
+          <p>{item.question.explanation}</p>
+        </div>
+      </article>)}
     </section>
   </div>
 }
