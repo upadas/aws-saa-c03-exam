@@ -30,3 +30,24 @@ test('questions are original practice records with valid answer indexes', () => 
 
   assert.equal(ids.size, questions.length)
 })
+
+test('answer choices avoid throwaway distractors from the draft bank', () => {
+  const weakDraftPhrases = [
+    'root password',
+    'user data',
+    'S3 static website hosting',
+    'CloudFront signed cookies',
+    'IAM policy character count',
+    'Dedicated Host for Lambda',
+    'Route 53 hosted zone size',
+  ]
+  const allOptions = questions.flatMap(question => question.options)
+
+  weakDraftPhrases.forEach(phrase => {
+    assert.equal(
+      allOptions.some(option => option.includes(phrase)),
+      false,
+      `Generated options should not include weak draft phrase: ${phrase}`,
+    )
+  })
+})
