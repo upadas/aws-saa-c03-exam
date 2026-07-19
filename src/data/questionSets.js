@@ -913,18 +913,47 @@ const nuancedOptionOverrides = {
   100: ['Add interface VPC endpoints for supported AWS services used by private subnets', 'Add only gateway endpoints for S3 and DynamoDB while leaving SSM and ECR on NAT', 'Replace NAT gateways with NAT instances sized for average traffic', 'Route private subnet traffic to an internet gateway with restrictive security groups'],
 }
 
+const domainSlugs = {
+  'Secure Architectures': 'security',
+  'Resilient Architectures': 'resilience',
+  'High-Performing Architectures': 'performance',
+  'Cost-Optimized Architectures': 'cost',
+}
+
+function slug(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+}
+
+function inferObjective(domain, item) {
+  const primaryServices = item.services.slice(0, 2)
+  const serviceName = primaryServices.join(' + ') || domain
+  return {
+    objectiveId: `${domainSlugs[domain]}-${slug(serviceName)}`,
+    objectiveName: `${serviceName} architecture decisions`,
+    tags: [...new Set([...item.services, item.difficulty, item.answers.length > 1 ? 'multi-select' : 'single-select'])],
+  }
+}
+
 function buildQuestions(domain, items, startId) {
-  return items.map((item, index) => ({
-    id: startId + index,
-    domain,
-    difficulty: item.difficulty,
-    type: item.answers.length > 1 ? 'multiple' : 'single',
-    question: item.question,
-    options: nuancedOptionOverrides[startId + index] || item.options,
-    answers: item.answers,
-    explanation: item.explanation,
-    services: item.services,
-  }))
+  return items.map((item, index) => {
+    const id = startId + index
+    const objective = inferObjective(domain, item)
+    return {
+      id,
+      ...objective,
+      domain,
+      difficulty: item.difficulty,
+      type: item.answers.length > 1 ? 'multiple' : 'single',
+      question: item.question,
+      options: nuancedOptionOverrides[id] || item.options,
+      answers: item.answers,
+      explanation: item.explanation,
+      services: item.services,
+    }
+  })
 }
 
 const secureQuestions = buildQuestions('Secure Architectures', secure, 1)

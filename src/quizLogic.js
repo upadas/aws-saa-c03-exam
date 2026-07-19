@@ -19,20 +19,95 @@ export function shuffle(items) {
   return [...items].sort(() => Math.random() - 0.5)
 }
 
+export function shuffleWithRandom(items, random = Math.random) {
+  const copy = [...items]
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1))
+    const item = copy[index]
+    copy[index] = copy[swapIndex]
+    copy[swapIndex] = item
+  }
+  return copy
+}
+
+export function makeOptionId(questionId, index) {
+  return `${questionId}:option-${index}`
+}
+
+function isOptionRecord(option) {
+  return option && typeof option === 'object' && Object.hasOwn(option, 'id')
+}
+
+function selectedToId(question, selected) {
+  return typeof selected === 'number' ? makeOptionId(question.id, selected) : selected
+}
+
+export function getOptionRecords(question) {
+  const answerIds = new Set(
+    (question.answers || []).map(answer => selectedToId(question, answer)),
+  )
+
+  return (question.options || []).map((option, index) => {
+    if (isOptionRecord(option)) {
+      return {
+        id: option.id,
+        text: option.text,
+        originalIndex: option.originalIndex ?? index,
+        correct: option.correct ?? answerIds.has(option.id),
+        explanation: option.explanation || question.explanation,
+      }
+    }
+
+    const id = makeOptionId(question.id, index)
+    return {
+      id,
+      text: option,
+      originalIndex: index,
+      correct: answerIds.has(id),
+      explanation: question.explanation,
+    }
+  })
+}
+
+export function correctOptionIds(question) {
+  if (!question.options?.length) {
+    return (question.answers || []).map(answer => selectedToId(question, answer))
+  }
+
+  return getOptionRecords(question)
+    .filter(option => option.correct)
+    .map(option => option.id)
+}
+
+export function createSessionQuestion(question, random = Math.random) {
+  const options = shuffleWithRandom(getOptionRecords(question), random)
+  return {
+    ...question,
+    prompt: question.prompt || question.question,
+    options,
+    answers: options.filter(option => option.correct).map(option => option.id),
+    optionOrder: options.map(option => option.originalIndex),
+  }
+}
+
+export function createSessionQuestions(questions, random = Math.random) {
+  return questions.map(question => createSessionQuestion(question, random))
+}
+
 export function answerMatches(question, selected = []) {
-  if (selected.length !== question.answers.length) return false
-  const expected = [...question.answers].sort((a, b) => a - b)
-  const actual = [...selected].sort((a, b) => a - b)
+  const expected = correctOptionIds(question).sort()
+  const actual = selected.map(answer => selectedToId(question, answer)).sort()
+  if (actual.length !== expected.length) return false
   return actual.every((value, index) => value === expected[index])
 }
 
 export function buildQuestionReview(question, selected = []) {
-  const selectedSet = new Set(selected)
-  const correctSet = new Set(question.answers)
-  const selectedLabels = selected
-    .filter(index => question.options[index])
-    .map(index => question.options[index])
-  const correctLabels = question.answers.map(index => question.options[index])
+  const optionRecords = getOptionRecords(question)
+  const selectedSet = new Set(selected.map(answer => selectedToId(question, answer)))
+  const selectedLabels = optionRecords
+    .filter(option => selectedSet.has(option.id))
+    .map(option => option.text)
+  const correctLabels = optionRecords.filter(option => option.correct).map(option => option.text)
 
   return {
     id: question.id,
@@ -40,10 +115,12 @@ export function buildQuestionReview(question, selected = []) {
     isAnswered: selected.length > 0,
     selectedLabels,
     correctLabels,
-    options: question.options.map((label, index) => ({
-      label,
-      isSelected: selectedSet.has(index),
-      isCorrect: correctSet.has(index),
+    options: optionRecords.map(option => ({
+      id: option.id,
+      label: option.text,
+      explanation: option.explanation,
+      isSelected: selectedSet.has(option.id),
+      isCorrect: option.correct,
     })),
   }
 }
@@ -66,6 +143,164 @@ export function sampleWeighted(questions, count) {
   }
 
   return shuffle(chosen).slice(0, count)
+}
+
+export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
+  const eligible = questions.filter(question => {
+    const domainMatch = !filters.domain || filters.domain === 'All' || question.domain === filters.domain
+    const objectiveMatch = !filters.objectiveIds?.length || filters.objectiveIds.includes(question.objectiveId)
+    const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect'
+    return domainMatch && objectiveMatch && missedMatch
+  })
+  const remaining = [...eligible]
+  const selected = []
+
+  while (selected.length < count && remaining.length) {
+    const weighted = remaining.map(question => ({
+      question,
+      weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
+    }))
+    const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
+    let cursor = random() * totalWeight
+    let chosenIndex = 0
+
+    for (let index = 0; index < weighted.length; index += 1) {
+      cursor -= weighted[index].weight
+      if (cursor <= 0) {
+        chosenIndex = index
+        break
+      }
+    }
+
+    selected.push(weighted[chosenIndex].question)
+    remaining.splice(chosenIndex, 1)
+  }
+
+  if (selected.length < count && filters.missedOnly) {
+    const selectedIds = new Set(selected.map(question => question.id))
+    selected.push(
+      ...selectAdaptiveQuestions(
+        questions.filter(question => !selectedIds.has(question.id)),
+        progress,
+        count - selected.length,
+        { ...filters, missedOnly: false },
+        random,
+      ),
+    )
+  }
+
+  return selected
+}
+
+export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
+  const seenQuestionIds = new Set(objectiveProgress.seenQuestionIds || [])
+  const attempts = objectiveProgress.attempts || 0
+  const mastery = objectiveProgress.mastery || 0
+  let weight = 1
+
+  if (!attempts) weight += 2
+  if (objectiveProgress.lastResult === 'incorrect') weight += 7
+  if (objectiveProgress.consecutiveCorrect === 1) weight += 4
+  if (!seenQuestionIds.has(question.id)) weight += 2.5
+  if (seenQuestionIds.has(question.id)) weight -= 0.75
+  if (mastery >= 0.8) weight -= 0.8
+  if (objectiveProgress.lastAttemptAt) {
+    const daysSinceAttempt = (Date.now() - Date.parse(objectiveProgress.lastAttemptAt)) / 86400000
+    if (daysSinceAttempt > 14) weight += 1.25
+  }
+
+  return Math.max(weight, 0.2)
+}
+
+export function updateObjectiveProgress(progress = {}, sessionQuestions = [], answers = {}, timestamp = new Date().toISOString()) {
+  const next = { ...progress }
+
+  sessionQuestions.forEach(question => {
+    const objectiveId = question.objectiveId || `question-${question.id}`
+    const previous = next[objectiveId] || {
+      objectiveId,
+      objectiveName: question.objectiveName || question.services?.join(' + ') || 'Architecture objective',
+      domain: question.domain,
+      attempts: 0,
+      correct: 0,
+      consecutiveCorrect: 0,
+      seenQuestionIds: [],
+      mastery: 0,
+    }
+    const isCorrect = answerMatches(question, answers[question.id] || [])
+    const attempts = previous.attempts + 1
+    const correct = previous.correct + (isCorrect ? 1 : 0)
+    const consecutiveCorrect = isCorrect ? previous.consecutiveCorrect + 1 : 0
+    const seenQuestionIds = [...new Set([...(previous.seenQuestionIds || []), question.id])]
+    const accuracy = correct / attempts
+    const streakScore = Math.min(consecutiveCorrect, 3) / 3
+
+    next[objectiveId] = {
+      ...previous,
+      objectiveId,
+      objectiveName: previous.objectiveName || question.objectiveName,
+      domain: previous.domain || question.domain,
+      attempts,
+      correct,
+      consecutiveCorrect,
+      lastAttemptAt: timestamp,
+      lastResult: isCorrect ? 'correct' : 'incorrect',
+      seenQuestionIds,
+      mastery: Math.round(Math.min(1, accuracy * 0.65 + streakScore * 0.35) * 100) / 100,
+    }
+  })
+
+  return next
+}
+
+export function buildSessionResult(session) {
+  const date = new Date().toISOString()
+  const correct = session.questions.filter(question => answerMatches(question, session.answers[question.id] || [])).length
+  const objectiveGroups = new Map()
+
+  session.questions.forEach(question => {
+    const objectiveId = question.objectiveId || `question-${question.id}`
+    const current = objectiveGroups.get(objectiveId) || {
+      objectiveId,
+      objectiveName: question.objectiveName || question.services?.join(' + ') || 'Architecture objective',
+      domain: question.domain,
+      correct: 0,
+      total: 0,
+      questionIds: [],
+    }
+    current.total += 1
+    current.questionIds.push(question.id)
+    if (answerMatches(question, session.answers[question.id] || [])) current.correct += 1
+    objectiveGroups.set(objectiveId, current)
+  })
+
+  return {
+    id: session.id,
+    date,
+    mode: session.mode,
+    correct,
+    total: session.questions.length,
+    domains: Object.keys(DOMAIN_META).map(domain => {
+      const qs = session.questions.filter(question => question.domain === domain)
+      return {
+        domain,
+        correct: qs.filter(question => answerMatches(question, session.answers[question.id] || [])).length,
+        total: qs.length,
+      }
+    }),
+    objectives: [...objectiveGroups.values()],
+  }
+}
+
+export function getCorrectPositionDistribution(questions) {
+  return questions.reduce((distribution, question) => {
+    getOptionRecords(question).forEach((option, index) => {
+      if (!option.correct) return
+      const letter = String.fromCharCode(65 + index)
+      distribution[letter] = (distribution[letter] || 0) + 1
+    })
+    return distribution
+  }, {})
 }
 
 export function formatTime(seconds) {

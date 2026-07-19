@@ -4,16 +4,24 @@ import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
   answerMatches,
+  adaptiveQuestionWeight,
   buildQuestionReview,
+  createSessionQuestion,
+  getCorrectPositionDistribution,
   formatTime,
   sampleWeighted,
+  selectAdaptiveQuestions,
+  updateObjectiveProgress,
   validateQuestionSets,
 } from './quizLogic.js'
 
 const makeQuestion = (id, domain) => ({
   id,
   domain,
+  objectiveId: `${domain}-${id}`,
+  objectiveName: `${domain} objective ${id}`,
   answers: [0],
+  options: ['Correct option', 'Plausible distractor', 'Another distractor', 'Tradeoff distractor'],
 })
 
 test('answerMatches treats multiple-response answers as order independent', () => {
@@ -36,18 +44,99 @@ test('buildQuestionReview summarizes selected and correct answers', () => {
     id: 42,
     isCorrect: true,
     isAnswered: true,
-    selectedLabels: ['Span two AZs', 'Use an ALB'],
+    selectedLabels: ['Use an ALB', 'Span two AZs'],
     correctLabels: ['Use an ALB', 'Span two AZs'],
     options: [
-      { label: 'Use an ALB', isSelected: true, isCorrect: true },
-      { label: 'Use one instance', isSelected: false, isCorrect: false },
-      { label: 'Span two AZs', isSelected: true, isCorrect: true },
-      { label: 'Disable health checks', isSelected: false, isCorrect: false },
+      { id: '42:option-0', label: 'Use an ALB', explanation: undefined, isSelected: true, isCorrect: true },
+      { id: '42:option-1', label: 'Use one instance', explanation: undefined, isSelected: false, isCorrect: false },
+      { id: '42:option-2', label: 'Span two AZs', explanation: undefined, isSelected: true, isCorrect: true },
+      { id: '42:option-3', label: 'Disable health checks', explanation: undefined, isSelected: false, isCorrect: false },
     ],
   })
 
   assert.equal(buildQuestionReview(question, []).isAnswered, false)
   assert.equal(buildQuestionReview(question, []).isCorrect, false)
+})
+
+test('createSessionQuestion shuffles options while preserving correct answer ids', () => {
+  const question = {
+    id: 10,
+    answers: [0, 2],
+    options: ['Scale across AZs', 'Use one subnet', 'Enable health checks', 'Disable failover'],
+  }
+  const sessionQuestion = createSessionQuestion(question, () => 0.9)
+  const selected = sessionQuestion.options
+    .filter(option => option.correct)
+    .map(option => option.id)
+
+  assert.equal(sessionQuestion.options.length, 4)
+  assert.deepEqual([...sessionQuestion.answers].sort(), ['10:option-0', '10:option-2'])
+  assert.equal(answerMatches(sessionQuestion, selected), true)
+})
+
+test('session option order stays stable when stored on the session question', () => {
+  const question = {
+    id: 12,
+    answers: [1],
+    options: ['Near miss', 'Correct', 'Also tempting', 'Wrong scope'],
+  }
+  const sessionQuestion = createSessionQuestion(question, () => 0.1)
+  const orderBefore = [...sessionQuestion.optionOrder]
+  const orderAfterNavigation = [...sessionQuestion.optionOrder]
+
+  assert.deepEqual(orderAfterNavigation, orderBefore)
+})
+
+test('adaptive selection boosts missed objectives and avoids duplicate questions', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
+  ]
+  const progress = {
+    's3-endpoint': {
+      objectiveId: 's3-endpoint',
+      attempts: 1,
+      correct: 0,
+      consecutiveCorrect: 0,
+      lastResult: 'incorrect',
+      seenQuestionIds: [1],
+      mastery: 0,
+    },
+  }
+  const sample = selectAdaptiveQuestions(questions, progress, 2, {}, () => 0)
+
+  assert.equal(new Set(sample.map(question => question.id)).size, sample.length)
+  assert.equal(sample[0].objectiveId, 's3-endpoint')
+  assert.ok(
+    adaptiveQuestionWeight(questions[1], progress['s3-endpoint']) >
+      adaptiveQuestionWeight(questions[2], undefined),
+  )
+})
+
+test('updateObjectiveProgress tracks objective mastery across variants', () => {
+  const sessionQuestions = [
+    createSessionQuestion({ ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
+    createSessionQuestion({ ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
+  ]
+  const answers = Object.fromEntries(sessionQuestions.map(question => [question.id, question.answers]))
+  const progress = updateObjectiveProgress({}, sessionQuestions, answers, '2026-07-19T00:00:00.000Z')
+
+  assert.equal(progress['s3-endpoint'].attempts, 2)
+  assert.equal(progress['s3-endpoint'].correct, 2)
+  assert.equal(progress['s3-endpoint'].consecutiveCorrect, 2)
+  assert.equal(progress['s3-endpoint'].seenQuestionIds.length, 2)
+  assert.ok(progress['s3-endpoint'].mastery > 0.8)
+})
+
+test('getCorrectPositionDistribution reports displayed correct positions', () => {
+  const questions = [
+    createSessionQuestion({ id: 1, answers: [0], options: ['A', 'B', 'C', 'D'] }, () => 0),
+    createSessionQuestion({ id: 2, answers: [1], options: ['A', 'B', 'C', 'D'] }, () => 0),
+  ]
+  const distribution = getCorrectPositionDistribution(questions)
+
+  assert.equal(Object.values(distribution).reduce((sum, count) => sum + count, 0), 2)
 })
 
 test('formatTime renders the SAA-C03 exam duration as 130:00', () => {

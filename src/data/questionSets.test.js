@@ -18,10 +18,13 @@ test('questions are original practice records with valid answer indexes', () => 
     assert.match(question.difficulty, /^(Easy|Medium|Hard)$/)
     assert.match(question.type, /^(single|multiple)$/)
     assert.ok(question.question.length > 80, `${question.id} should be scenario-based`)
+    assert.ok(question.objectiveId.length > 6, `${question.id} should have an objective id`)
+    assert.ok(question.objectiveName.length > 10, `${question.id} should have an objective name`)
     assert.ok(question.options.length >= 4, `${question.id} should have at least 4 options`)
     assert.ok(question.answers.length >= 1, `${question.id} should have answers`)
     assert.ok(question.explanation.length > 50, `${question.id} should explain the answer`)
     assert.ok(question.services.length >= 1, `${question.id} should tag services`)
+    assert.ok(question.tags.length >= question.services.length, `${question.id} should include objective tags`)
 
     question.answers.forEach(answer => {
       assert.ok(answer >= 0 && answer < question.options.length, `${question.id} has invalid answer index`)

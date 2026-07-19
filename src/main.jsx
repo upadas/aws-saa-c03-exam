@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { 
-  ArrowRight, Award, BookOpen, Check, CheckCircle2, ChevronLeft, ChevronRight,
-  Clock3, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search, ShieldCheck,
-  Sparkles, Target, Timer, XCircle
+import {
+  ArrowRight, Award, BookOpen, Check, CheckCircle2, ChevronLeft,
+  ChevronRight, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search,
+  ShieldCheck, Sparkles, Target, Timer, XCircle,
 } from 'lucide-react'
 import { questions, questionSets } from './data/questionSets'
 import {
@@ -12,70 +12,163 @@ import {
   EXAM_QUESTION_COUNT,
   answerMatches,
   buildQuestionReview,
+  buildSessionResult,
+  createSessionQuestions,
   formatTime,
+  getOptionRecords,
   sampleWeighted,
-  shuffle,
+  selectAdaptiveQuestions,
+  updateObjectiveProgress,
 } from './quizLogic'
 import './styles.css'
 
-const storageKey = 'saa-c03-progress-v1'
+const storageKey = 'saa-c03-progress-v2'
+const legacyStorageKey = 'saa-c03-progress-v1'
+
+const defaultSaved = {
+  schemaVersion: 2,
+  attempts: [],
+  mastered: [],
+  objectiveProgress: {},
+  completedSessions: [],
+  activeSession: null,
+}
+
+function normalizeSaved(value) {
+  return {
+    ...defaultSaved,
+    ...(value || {}),
+    schemaVersion: 2,
+    attempts: Array.isArray(value?.attempts) ? value.attempts : [],
+    mastered: Array.isArray(value?.mastered) ? value.mastered : [],
+    objectiveProgress: value?.objectiveProgress || {},
+    completedSessions: Array.isArray(value?.completedSessions) ? value.completedSessions : [],
+    activeSession: value?.activeSession || null,
+  }
+}
+
+function loadSaved() {
+  try {
+    const current = localStorage.getItem(storageKey)
+    if (current) return normalizeSaved(JSON.parse(current))
+    const legacy = localStorage.getItem(legacyStorageKey)
+    if (legacy) return normalizeSaved(JSON.parse(legacy))
+  } catch {
+    return defaultSaved
+  }
+  return defaultSaved
+}
 
 function App() {
-  const [view, setView] = useState('dashboard')
+  const [initialSaved] = useState(loadSaved)
+  const [view, setView] = useState(() => (
+    initialSaved.activeSession?.result ? 'result' : initialSaved.activeSession ? 'quiz' : 'dashboard'
+  ))
   const [bankQuery, setBankQuery] = useState('')
   const [domainFilter, setDomainFilter] = useState('All')
-  const [session, setSession] = useState(null)
-  const [saved, setSaved] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(storageKey)) || { attempts: [], mastered: [] } }
-    catch { return { attempts: [], mastered: [] } }
-  })
+  const [difficultyFilter, setDifficultyFilter] = useState('All')
+  const [session, setSession] = useState(() => initialSaved.activeSession)
+  const [saved, setSaved] = useState(() => initialSaved)
 
-  useEffect(() => localStorage.setItem(storageKey, JSON.stringify(saved)), [saved])
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify({ ...saved, activeSession: session }))
+  }, [saved, session])
 
-  const questionById = useMemo(() => new Map(questions.map(q => [q.id, q])), [])
+  const questionById = useMemo(() => new Map(questions.map(question => [question.id, question])), [])
+  const objectiveCount = useMemo(() => new Set(questions.map(question => question.objectiveId)).size, [])
+  const mastered = new Set(saved.mastered)
+  const objectiveProgress = saved.objectiveProgress || {}
+  const progressList = Object.values(objectiveProgress)
+  const latest = saved.attempts[0]
+  const avg = saved.attempts.length
+    ? Math.round(saved.attempts.reduce((sum, attempt) => sum + attempt.correct / attempt.total * 100, 0) / saved.attempts.length)
+    : 0
+  const weakObjectives = progressList
+    .filter(item => item.attempts && (item.lastResult === 'incorrect' || item.mastery < 0.65))
+    .sort((a, b) => (a.mastery || 0) - (b.mastery || 0))
+    .slice(0, 4)
+  const masteredObjectives = progressList.filter(item => item.mastery >= 0.85).length
 
-  const startQuiz = (mode, count = 10, domain = 'All', questionList = null) => {
-    let pool = domain === 'All' ? questions : questions.filter(q => q.domain === domain)
-    let list = questionList || (mode === 'exam'
-      ? sampleWeighted(questions, Math.min(count, questions.length))
-      : shuffle(pool).slice(0, count))
+  const startQuiz = (mode, count = 10, domain = 'All', questionList = null, options = {}) => {
+    let list = questionList
+
+    if (!list && mode === 'exam') {
+      list = sampleWeighted(questions, Math.min(count, questions.length))
+    } else if (!list && mode === 'missed') {
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { missedOnly: true })
+    } else if (!list && mode === 'objective') {
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [] })
+    } else if (!list) {
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { domain })
+    }
+
+    const sessionQuestions = createSessionQuestions(list)
     setSession({
-      mode, questions: list, index: 0, answers: {}, flagged: [], checked: {}, startedAt: Date.now(),
-      duration: mode === 'exam' ? EXAM_DURATION_SECONDS : null
+      id: `session-${Date.now()}`,
+      mode,
+      title: options.title || modeTitle(mode, domain),
+      setId: options.setId || null,
+      domain,
+      questions: sessionQuestions,
+      questionIds: sessionQuestions.map(question => question.id),
+      optionOrders: Object.fromEntries(sessionQuestions.map(question => [question.id, question.optionOrder])),
+      index: 0,
+      answers: {},
+      flagged: [],
+      checked: {},
+      startedAt: Date.now(),
+      duration: mode === 'exam' ? EXAM_DURATION_SECONDS : null,
+      result: null,
     })
     setView('quiz')
   }
 
   const startQuestionSet = set => {
     const list = set.questionIds.map(id => questionById.get(id)).filter(Boolean)
-    startQuiz('set', list.length, 'All', list)
+    startQuiz('set', list.length, 'All', list, { setId: set.id, title: set.name })
   }
 
   const finishQuiz = () => {
-    const correct = session.questions.filter(q => answerMatches(q, session.answers[q.id])).length
-    const result = {
-      date: new Date().toISOString(), correct, total: session.questions.length,
-      domains: Object.keys(DOMAIN_META).map(domain => {
-        const qs = session.questions.filter(q => q.domain === domain)
-        return { domain, correct: qs.filter(q => answerMatches(q, session.answers[q.id])).length, total: qs.length }
-      })
-    }
-    setSaved(prev => ({ ...prev, attempts: [result, ...prev.attempts].slice(0, 20) }))
-    setSession({ ...session, result })
+    if (!session || session.result) return
+    const result = buildSessionResult(session)
+    setSaved(prev => ({
+      ...prev,
+      attempts: [result, ...prev.attempts].slice(0, 30),
+      completedSessions: [
+        { ...result, questionIds: session.questionIds, title: session.title },
+        ...prev.completedSessions,
+      ].slice(0, 30),
+      objectiveProgress: updateObjectiveProgress(prev.objectiveProgress, session.questions, session.answers, result.date),
+    }))
+    setSession({ ...session, result, completedAt: result.date })
     setView('result')
   }
 
-  const mastered = new Set(saved.mastered)
-  const latest = saved.attempts[0]
-  const avg = saved.attempts.length
-    ? Math.round(saved.attempts.reduce((s,a) => s + a.correct / a.total * 100, 0) / saved.attempts.length)
-    : 0
-
   return <div className="app-shell">
-    <Header view={view} setView={setView} />
+    <Header view={view} setView={setView} questionCount={questions.length} />
     <main>
-      {view === 'dashboard' && <Dashboard startQuiz={startQuiz} startQuestionSet={startQuestionSet} latest={latest} avg={avg} attempts={saved.attempts.length} mastered={mastered.size} />}
-      {view === 'bank' && <QuestionBank query={bankQuery} setQuery={setBankQuery} domain={domainFilter} setDomain={setDomainFilter} mastered={mastered} setSaved={setSaved} startQuiz={startQuiz} />}
+      {view === 'dashboard' && <Dashboard
+        avg={avg}
+        latest={latest}
+        attempts={saved.attempts.length}
+        masteredQuestions={mastered.size}
+        masteredObjectives={masteredObjectives}
+        objectiveCount={objectiveCount}
+        weakObjectives={weakObjectives}
+        startQuiz={startQuiz}
+        startQuestionSet={startQuestionSet}
+      />}
+      {view === 'bank' && <QuestionBank
+        query={bankQuery}
+        setQuery={setBankQuery}
+        domain={domainFilter}
+        setDomain={setDomainFilter}
+        difficulty={difficultyFilter}
+        setDifficulty={setDifficultyFilter}
+        mastered={mastered}
+        setSaved={setSaved}
+        startQuiz={startQuiz}
+      />}
       {view === 'quiz' && session && <Quiz session={session} setSession={setSession} finishQuiz={finishQuiz} />}
       {view === 'result' && session?.result && <Results session={session} setView={setView} startQuiz={startQuiz} />}
       {view === 'review' && session?.result && <Review session={session} setView={setView} startQuiz={startQuiz} />}
@@ -83,7 +176,15 @@ function App() {
   </div>
 }
 
-function Header({ view, setView }) {
+function modeTitle(mode, domain) {
+  if (mode === 'exam') return '65-question exam simulation'
+  if (mode === 'missed') return 'Missed concepts'
+  if (mode === 'objective') return 'Objective drill'
+  if (domain && domain !== 'All') return `${DOMAIN_META[domain]?.short || domain} drill`
+  return 'Quick adaptive practice'
+}
+
+function Header({ view, setView, questionCount }) {
   return <header className="topbar">
     <button className="brand" onClick={() => setView('dashboard')}>
       <span className="brand-mark"><Cloud size={23}/></span>
@@ -93,24 +194,37 @@ function Header({ view, setView }) {
       <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={17}/> Dashboard</button>
       <button className={view === 'bank' ? 'active' : ''} onClick={() => setView('bank')}><BookOpen size={17}/> Question bank</button>
     </nav>
-    <div className="exam-pill"><span></span> 100 original questions</div>
+    <div className="exam-pill"><span></span> {questionCount} original questions</div>
   </header>
 }
 
-function Dashboard({ startQuiz, startQuestionSet, latest, avg, attempts, mastered }) {
+function Dashboard({
+  avg,
+  latest,
+  attempts,
+  masteredQuestions,
+  masteredObjectives,
+  objectiveCount,
+  weakObjectives,
+  startQuiz,
+  startQuestionSet,
+}) {
   const latestPct = latest ? Math.round(latest.correct / latest.total * 100) : null
+  const readiness = attempts ? Math.min(avg, 100) : Math.round(masteredObjectives / Math.max(objectiveCount, 1) * 100)
+
   return <div className="page dashboard cockpit-page">
     <section className="cockpit-shell">
       <aside className="study-rail">
         <div className="rail-label">Study plan</div>
         <div className="plan-card">
           <strong>65-question exam readiness</strong>
-          <div className="meter"><span style={{ width: `${attempts ? Math.min(avg, 100) : 12}%` }}></span></div>
-          <small>{attempts ? `${avg}% average across ${attempts} attempt${attempts > 1 ? 's' : ''}` : 'Complete a set to calibrate'}</small>
+          <div className="meter"><span style={{ width: `${Math.max(readiness, attempts ? 0 : 8)}%` }}></span></div>
+          <small>{attempts ? `${avg}% average across ${attempts} attempt${attempts > 1 ? 's' : ''}` : 'Complete a session to calibrate'}</small>
         </div>
         <div className="rail-list">
           <button onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={16}/><span>Full exam</span><b>130m</b></button>
           <button onClick={() => startQuiz('practice', 10)}><Target size={16}/><span>Quick practice</span><b>10q</b></button>
+          <button onClick={() => startQuiz('missed', 10)}><ListChecks size={16}/><span>Missed concepts</span><b>10q</b></button>
           <button onClick={() => startQuiz('practice', 10, 'Resilient Architectures')}><ShieldCheck size={16}/><span>Resilience drill</span><b>10q</b></button>
           <button onClick={() => startQuiz('practice', 10, 'Cost-Optimized Architectures')}><Award size={16}/><span>Cost drill</span><b>10q</b></button>
         </div>
@@ -119,9 +233,9 @@ function Dashboard({ startQuiz, startQuestionSet, latest, avg, attempts, mastere
       <section className="cockpit-main">
         <div className="cockpit-hero">
           <div>
-            <div className="eyebrow"><Sparkles size={15}/> AWS CERTIFIED SOLUTIONS ARCHITECT — ASSOCIATE</div>
+            <div className="eyebrow"><Sparkles size={15}/> AWS CERTIFIED SOLUTIONS ARCHITECT - ASSOCIATE</div>
             <h1>Study cockpit for scenario practice.</h1>
-            <p>100 original SAA-C03-style questions organized into 10 blueprint-weighted sets, plus a 65-question exam simulation.</p>
+            <p>{questions.length} original SAA-C03-style questions mapped to {objectiveCount} objectives, with adaptive variants and a 65-question exam simulation.</p>
             <div className="hero-actions">
               <button className="primary" onClick={() => startQuestionSet(questionSets[0])}><Target size={19}/> Start Set 1 <ArrowRight size={18}/></button>
               <button className="secondary" onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={19}/> 65-question exam</button>
@@ -129,18 +243,18 @@ function Dashboard({ startQuiz, startQuestionSet, latest, avg, attempts, mastere
           </div>
           <div className="score-tile">
             <span>Average score</span>
-            <strong>{attempts ? `${avg}%` : '—'}</strong>
-            <small>{latest ? `Latest ${latestPct}% (${latest.correct}/${latest.total})` : 'No attempts yet'}</small>
+            <strong>{attempts ? `${avg}%` : '--'}</strong>
+            <small>{latest ? `Latest ${latestPct}% (${latest.correct}/${latest.total})` : `${masteredObjectives}/${objectiveCount} objectives mastered`}</small>
           </div>
         </div>
 
         <section className="domain-strip">
           {Object.entries(DOMAIN_META).map(([name, meta]) =>
-            <button className="domain-mini" key={name} onClick={() => startQuiz('practice', Math.min(10, questions.filter(q=>q.domain===name).length), name)}>
+            <button className="domain-mini" key={name} onClick={() => startQuiz('practice', Math.min(10, questions.filter(q => q.domain === name).length), name)}>
               <span>{meta.short}</span>
               <strong>{meta.weight}%</strong>
-              <small>{questions.filter(q=>q.domain===name).length} questions</small>
-              <div className="meter"><i style={{width:`${meta.weight}%`}}></i></div>
+              <small>{questions.filter(q => q.domain === name).length} questions</small>
+              <div className="meter"><i style={{ width: `${meta.weight}%` }}></i></div>
             </button>
           )}
         </section>
@@ -148,7 +262,8 @@ function Dashboard({ startQuiz, startQuestionSet, latest, avg, attempts, mastere
         <section className="set-grid">
           {questionSets.map((set, index) =>
             <article className="set-card" key={set.id}>
-              <div><span>SET {String(index + 1).padStart(2, '0')}</span><h3>{set.name}</h3><p>{set.description}</p></div>
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <div><h3>{set.name}</h3><p>{set.description}</p></div>
               <button onClick={() => startQuestionSet(set)}>Start set <ChevronRight size={16}/></button>
             </article>
           )}
@@ -158,124 +273,156 @@ function Dashboard({ startQuiz, startQuestionSet, latest, avg, attempts, mastere
       <aside className="coach-panel">
         <div className="rail-label">Coach notes</div>
         <div className="coach-box">
-          <h3>Readiness target</h3>
-          <p>Aim for 80%+ across several sets before relying on a full exam simulation.</p>
+          <h3>Adaptive engine</h3>
+          <p>Missed objectives get boosted, and the next attempt prefers a different variant before repeating exact wording.</p>
         </div>
         <div className="coach-box">
           <h3>Progress</h3>
-          <p>{mastered} of {questions.length} questions marked mastered. Use the bank to mark concepts that feel automatic.</p>
+          <p>{masteredQuestions} questions marked mastered. Objective mastery is tracked separately from manual overrides.</p>
         </div>
         <div className="coach-box">
-          <h3>Question style</h3>
-          <p>Questions are original practice content based on AWS blueprint domains, not real exam questions.</p>
+          <h3>Weak objectives</h3>
+          {weakObjectives.length ? weakObjectives.map(item =>
+            <button className="weak-objective" key={item.objectiveId} onClick={() => startQuiz('objective', 10, 'All', null, { objectiveIds: [item.objectiveId], title: item.objectiveName })}>
+              <span>{item.objectiveName}</span><b>{Math.round((item.mastery || 0) * 100)}%</b>
+            </button>
+          ) : <p>No weak objectives yet. Complete a practice session to unlock targeted drills.</p>}
         </div>
       </aside>
     </section>
   </div>
 }
 
-function Stat({ icon, label, value, note }) {
-  return <div className="stat-card"><div className="stat-icon">{icon}</div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></div>
-}
-
-function QuestionBank({ query, setQuery, domain, setDomain, mastered, setSaved, startQuiz }) {
-  const filtered = questions.filter(q =>
-    (domain === 'All' || q.domain === domain) &&
-    (`${q.question} ${q.services.join(' ')}`.toLowerCase().includes(query.toLowerCase()))
-  )
+function QuestionBank({ query, setQuery, domain, setDomain, difficulty, setDifficulty, mastered, setSaved, startQuiz }) {
+  const [expandedIds, setExpandedIds] = useState([])
+  const filtered = questions.filter(question => {
+    const haystack = `${question.question} ${question.objectiveName} ${question.services.join(' ')} ${question.tags.join(' ')}`.toLowerCase()
+    return (domain === 'All' || question.domain === domain) &&
+      (difficulty === 'All' || question.difficulty === difficulty) &&
+      haystack.includes(query.toLowerCase())
+  })
   const toggleMastered = id => setSaved(prev => ({
-    ...prev, mastered: prev.mastered.includes(id) ? prev.mastered.filter(x=>x!==id) : [...prev.mastered,id]
+    ...prev,
+    mastered: prev.mastered.includes(id) ? prev.mastered.filter(item => item !== id) : [...prev.mastered, id],
   }))
+  const toggleExpanded = id => setExpandedIds(prev => (
+    prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+  ))
+
   return <div className="page bank-page">
-    <div className="bank-header"><div><span>QUESTION LIBRARY</span><h1>{questions.length} architecture scenarios</h1><p>Search by service, filter by domain, and mark concepts as mastered.</p></div><button className="primary" onClick={() => startQuiz('practice', 10)}><Target size={18}/> Random 10</button></div>
+    <div className="bank-header">
+      <div><span>QUESTION LIBRARY</span><h1>{filtered.length} architecture scenarios</h1><p>Search by objective, service, tag, or scenario and browse explanations.</p></div>
+      <button className="primary" onClick={() => startQuiz('practice', 10)}><Target size={18}/> Adaptive 10</button>
+    </div>
     <div className="bank-controls">
-      <label className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search S3, VPC, resilience..."/></label>
-      <select value={domain} onChange={e=>setDomain(e.target.value)}>
-        <option>All</option>{Object.keys(DOMAIN_META).map(d=><option key={d}>{d}</option>)}
+      <label className="search"><Search size={18}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search S3, VPC, resilience..."/></label>
+      <select value={domain} onChange={event => setDomain(event.target.value)}>
+        <option>All</option>{Object.keys(DOMAIN_META).map(item => <option key={item}>{item}</option>)}
+      </select>
+      <select value={difficulty} onChange={event => setDifficulty(event.target.value)}>
+        <option>All</option><option>Easy</option><option>Medium</option><option>Hard</option>
       </select>
     </div>
     <div className="bank-list">
-      {filtered.map(q => <article className="bank-item" key={q.id}>
-        <div className="q-index">{String(q.id).padStart(2,'0')}</div>
-        <div className="bank-main">
-          <div className="tags"><span>{DOMAIN_META[q.domain].short}</span><span>{q.difficulty}</span><span>{q.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
-          <h3>{q.question}</h3>
-          <div className="service-list">{q.services.map(s=><span key={s}>{s}</span>)}</div>
-        </div>
-        <button title="Mark mastered" className={`master ${mastered.has(q.id)?'on':''}`} onClick={()=>toggleMastered(q.id)}><Check size={19}/></button>
-      </article>)}
+      {filtered.map(question => {
+        const expanded = expandedIds.includes(question.id)
+        const correctAnswer = buildQuestionReview(question, question.answers).correctLabels.join('; ')
+        return <article className="bank-item" key={question.id}>
+          <div className="q-index">{String(question.id).padStart(2, '0')}</div>
+          <div className="bank-main">
+            <div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
+            <button className="bank-question" onClick={() => toggleExpanded(question.id)}>{question.question}</button>
+            <div className="objective-name">{question.objectiveName}</div>
+            <div className="service-list">{question.services.map(service => <span key={service}>{service}</span>)}</div>
+            {expanded && <div className="bank-answer"><strong>Answer</strong><p>{correctAnswer}</p><p>{question.explanation}</p></div>}
+          </div>
+          <button title="Mark mastered" className={`master ${mastered.has(question.id) ? 'on' : ''}`} onClick={() => toggleMastered(question.id)}><Check size={19}/></button>
+        </article>
+      })}
     </div>
   </div>
 }
 
 function Quiz({ session, setSession, finishQuiz }) {
   const [now, setNow] = useState(Date.now())
-  const q = session.questions[session.index]
-  const selected = session.answers[q.id] || []
-  const checked = session.checked[q.id]
+  const question = session.questions[session.index]
+  const options = getOptionRecords(question)
+  const selected = session.answers[question.id] || []
+  const checked = session.checked[question.id] || session.result
   const remaining = session.duration
     ? Math.max(0, session.duration - Math.floor((now - session.startedAt) / 1000))
     : null
 
   useEffect(() => {
-    if (!session.duration) return undefined
+    if (!session.duration || session.result) return undefined
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [session.duration, session.startedAt])
+  }, [session.duration, session.startedAt, session.result])
 
   useEffect(() => {
-    if (remaining === 0) finishQuiz()
-  }, [remaining, finishQuiz])
+    if (remaining === 0 && !session.result) finishQuiz()
+  }, [remaining, session.result, finishQuiz])
 
-  const choose = idx => {
+  const choose = optionId => {
     if (checked) return
-    let next = q.type === 'single' ? [idx] : selected.includes(idx) ? selected.filter(x=>x!==idx) : [...selected,idx]
-    setSession({...session, answers:{...session.answers,[q.id]:next}})
+    const next = question.type === 'single'
+      ? [optionId]
+      : selected.includes(optionId)
+        ? selected.filter(item => item !== optionId)
+        : [...selected, optionId]
+    setSession({ ...session, answers: { ...session.answers, [question.id]: next } })
   }
-  const check = () => setSession({...session, checked:{...session.checked,[q.id]:true}})
-  const flag = () => setSession({...session, flagged:session.flagged.includes(q.id)?session.flagged.filter(x=>x!==q.id):[...session.flagged,q.id]})
-  const go = i => setSession({...session,index:i})
+  const check = () => setSession({ ...session, checked: { ...session.checked, [question.id]: true } })
+  const flag = () => setSession({
+    ...session,
+    flagged: session.flagged.includes(question.id)
+      ? session.flagged.filter(item => item !== question.id)
+      : [...session.flagged, question.id],
+  })
+  const go = index => setSession({ ...session, index })
   const answered = Object.keys(session.answers).filter(id => session.answers[id]?.length).length
 
   return <div className="quiz-layout">
     <aside className="quiz-side">
-      <div className="side-title"><Cloud/><div><strong>SAA-C03</strong><span>{session.mode === 'exam' ? '65-question exam simulation' : session.mode === 'set' ? 'Practice set' : 'Practice session'}</span></div></div>
+      <div className="side-title"><Cloud/><div><strong>SAA-C03</strong><span>{session.title}</span></div></div>
       {remaining !== null && <div className="timer-box"><span>Time remaining</span><strong>{formatTime(remaining)}</strong></div>}
       <div className="progress-copy"><span>Progress</span><strong>{answered}/{session.questions.length}</strong></div>
-      <div className="progress"><span style={{width:`${answered/session.questions.length*100}%`}}></span></div>
+      <div className="progress"><span style={{ width: `${answered / session.questions.length * 100}%` }}></span></div>
       <div className="navigator">
-        {session.questions.map((item,i)=><button key={item.id} onClick={()=>go(i)} className={`${i===session.index?'current':''} ${session.answers[item.id]?.length?'answered':''} ${session.flagged.includes(item.id)?'flagged':''}`}>{i+1}</button>)}
+        {session.questions.map((item, index) => <button key={item.id} onClick={() => go(index)} className={`${index === session.index ? 'current' : ''} ${session.answers[item.id]?.length ? 'answered' : ''} ${session.flagged.includes(item.id) ? 'flagged' : ''}`}>{index + 1}</button>)}
       </div>
       <div className="legend"><span><i className="dot answered"></i>Answered</span><span><i className="dot flagged"></i>Flagged</span></div>
       <button className="end-btn" onClick={finishQuiz}>Finish session</button>
     </aside>
     <section className="question-panel">
       <div className="question-top">
-        <div><span>QUESTION {session.index+1} OF {session.questions.length}</span><div className="tags"><span>{DOMAIN_META[q.domain].short}</span><span>{q.difficulty}</span></div></div>
-        <button className={session.flagged.includes(q.id)?'flag-active':''} onClick={flag}><Flag size={17}/>{session.flagged.includes(q.id)?'Flagged':'Flag for review'}</button>
+        <div><span>QUESTION {session.index + 1} OF {session.questions.length}</span><div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.objectiveName}</span></div></div>
+        <button className={session.flagged.includes(question.id) ? 'flag-active' : ''} onClick={flag}><Flag size={17}/>{session.flagged.includes(question.id) ? 'Flagged' : 'Flag for review'}</button>
       </div>
       <div className="question-body">
-        {q.type === 'multiple' && <div className="multi-note">Select TWO answers.</div>}
-        <h1>{q.question}</h1>
+        {question.type === 'multiple' && <div className="multi-note">Select {question.answers.length} answers.</div>}
+        <h1>{question.question}</h1>
         <div className="options">
-          {q.options.map((opt,i)=>{
-            const chosen=selected.includes(i), right=checked&&q.answers.includes(i), wrong=checked&&chosen&&!q.answers.includes(i)
-            return <button key={opt} onClick={()=>choose(i)} className={`${chosen?'selected':''} ${right?'right':''} ${wrong?'wrong':''}`}>
-              <span className="letter">{String.fromCharCode(65+i)}</span><span>{opt}</span>{right&&<CheckCircle2/>}{wrong&&<XCircle/>}
+          {options.map((option, index) => {
+            const chosen = selected.includes(option.id)
+            const right = checked && option.correct
+            const wrong = checked && chosen && !option.correct
+            return <button key={option.id} onClick={() => choose(option.id)} className={`${chosen ? 'selected' : ''} ${right ? 'right' : ''} ${wrong ? 'wrong' : ''}`}>
+              <span className="letter">{String.fromCharCode(65 + index)}</span><span>{option.text}</span>{right && <CheckCircle2/>}{wrong && <XCircle/>}
             </button>
           })}
         </div>
-        {checked && <div className={`explanation ${answerMatches(q,selected)?'correct':'incorrect'}`}>
-          <div>{answerMatches(q,selected)?<CheckCircle2/>:<XCircle/>}<strong>{answerMatches(q,selected)?'Correct':'Not quite'}</strong></div>
-          <p>{q.explanation}</p>
+        {checked && session.mode !== 'exam' && <div className={`explanation ${answerMatches(question, selected) ? 'correct' : 'incorrect'}`}>
+          <div>{answerMatches(question, selected) ? <CheckCircle2/> : <XCircle/>}<strong>{answerMatches(question, selected) ? 'Correct' : 'Not quite'}</strong></div>
+          <p>{question.explanation}</p>
         </div>}
       </div>
       <div className="question-footer">
-        <button className="secondary" disabled={session.index===0} onClick={()=>go(session.index-1)}><ChevronLeft/> Previous</button>
+        <button className="secondary" disabled={session.index === 0} onClick={() => go(session.index - 1)}><ChevronLeft/> Previous</button>
         <div>
           {!checked && session.mode !== 'exam' && <button className="check-btn" disabled={!selected.length} onClick={check}>Check answer</button>}
-          {session.index < session.questions.length-1
-            ? <button className="primary" onClick={()=>go(session.index+1)}>Next <ChevronRight/></button>
+          {session.index < session.questions.length - 1
+            ? <button className="primary" onClick={() => go(session.index + 1)}>Next <ChevronRight/></button>
             : <button className="primary" onClick={finishQuiz}>Finish <Check/></button>}
         </div>
       </div>
@@ -284,25 +431,44 @@ function Quiz({ session, setSession, finishQuiz }) {
 }
 
 function Results({ session, setView, startQuiz }) {
-  const r=session.result, pct=Math.round(r.correct/r.total*100)
+  const result = session.result
+  const pct = Math.round(result.correct / result.total * 100)
+  const missedObjectives = result.objectives.filter(objective => objective.correct < objective.total)
+
   return <div className="page results">
     <div className="result-hero">
-      <div className="score-ring" style={{'--score':`${pct*3.6}deg`}}><div><strong>{pct}%</strong><span>{r.correct}/{r.total}</span></div></div>
-      <span>SESSION COMPLETE</span><h1>{pct>=80?'Architecture instincts: strong.':pct>=65?'You’re building momentum.':'Time to reinforce the foundations.'}</h1>
-      <p>Review your domain breakdown, then focus the next session on your lowest-scoring area.</p>
-      <div><button className="primary" onClick={()=>setView('review')}><ListChecks/> Review answers</button><button className="secondary" onClick={()=>startQuiz('practice',10)}><RotateCcw/> New practice</button><button className="secondary" onClick={()=>setView('bank')}><BookOpen/> Browse questions</button></div>
+      <div className="score-ring" style={{ '--score': `${pct * 3.6}deg` }}><div><strong>{pct}%</strong><span>{result.correct}/{result.total}</span></div></div>
+      <span>SESSION COMPLETE - {session.title}</span><h1>{pct >= 80 ? 'Architecture instincts: strong.' : pct >= 60 ? 'Solid foundation, a few gaps to close.' : 'Good start - more reps ahead.'}</h1>
+      <p>Review the domain breakdown and drill the objectives that need another variant.</p>
+      <div>
+        <button className="primary" onClick={() => setView('review')}><ListChecks/> Review questions</button>
+        <button className="secondary" onClick={() => startQuiz('missed', 10)}><Target/> Drill missed concepts</button>
+        <button className="secondary" onClick={() => startQuiz('practice', 10)}><RotateCcw/> New practice</button>
+      </div>
     </div>
     <section className="breakdown">
       <h2>Domain performance</h2>
-      {r.domains.filter(d=>d.total).map(d=>{
-        const p=Math.round(d.correct/d.total*100)
-        return <div className="break-row" key={d.domain}><div><strong>{d.domain}</strong><span>{d.correct} of {d.total} correct</span></div><div className="bar"><span style={{width:`${p}%`}}></span></div><b>{p}%</b></div>
+      {result.domains.filter(domain => domain.total).map(domain => {
+        const p = Math.round(domain.correct / domain.total * 100)
+        return <div className="break-row" key={domain.domain}><div><strong>{domain.domain}</strong><span>{domain.correct} of {domain.total} correct</span></div><div className="bar"><span style={{ width: `${p}%` }}></span></div><b>{p}%</b></div>
       })}
+    </section>
+    <section className="breakdown objective-breakdown">
+      <h2>Objective misses</h2>
+      {missedObjectives.length ? missedObjectives.map(objective =>
+        <div className="objective-row" key={objective.objectiveId}>
+          <div><strong>{objective.objectiveName}</strong><span>{objective.domain}</span></div>
+          <button onClick={() => startQuiz('objective', 10, 'All', null, { objectiveIds: [objective.objectiveId], title: objective.objectiveName })}>Drill variants <ChevronRight size={15}/></button>
+        </div>
+      ) : <p className="empty-copy">No objective misses in this session.</p>}
     </section>
   </div>
 }
 
 function Review({ session, setView, startQuiz }) {
+  const [reviewSelected, setReviewSelected] = useState(() => Object.fromEntries(
+    session.questions.map(question => [question.id, (session.answers[question.id] || [])[0] || null]),
+  ))
   const reviews = session.questions.map((question, index) => ({
     question,
     index,
@@ -314,8 +480,8 @@ function Review({ session, setView, startQuiz }) {
   return <div className="page review-page">
     <div className="review-header">
       <div>
-        <span>SESSION REVIEW</span>
-        <h1>Review the set you just answered.</h1>
+        <span>{session.title} - REVIEW</span>
+        <h1>Select an answer to see why it is right or not.</h1>
         <p>{correct} of {reviews.length} correct{unanswered ? `, ${unanswered} unanswered` : ''}.</p>
       </div>
       <div>
@@ -328,27 +494,26 @@ function Review({ session, setView, startQuiz }) {
         <header>
           <div>
             <span>QUESTION {item.index + 1}</span>
-            <div className="tags"><span>{DOMAIN_META[item.question.domain].short}</span><span>{item.question.difficulty}</span><span>{item.question.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
+            <div className="tags"><span>{DOMAIN_META[item.question.domain].short}</span><span>{item.question.difficulty}</span><span>{item.question.objectiveName}</span></div>
           </div>
-          <strong>{item.isCorrect ? 'Correct' : item.isAnswered ? 'Review' : 'Unanswered'}</strong>
+          <strong>{item.isCorrect ? 'Correct' : item.isAnswered ? 'Missed last time' : 'Unanswered'}</strong>
         </header>
         <h2>{item.question.question}</h2>
         <div className="review-options">
           {item.options.map((option, index) => {
-            const state = `${option.isSelected ? 'selected' : ''} ${option.isCorrect ? 'right' : ''} ${option.isSelected && !option.isCorrect ? 'wrong' : ''}`
-            return <div className={state} key={option.label}>
-              <span className="letter">{String.fromCharCode(65 + index)}</span>
-              <span>{option.label}</span>
-              <small>{option.isSelected && 'Your answer'}{option.isSelected && option.isCorrect && ' · '}{option.isCorrect && 'Correct answer'}</small>
+            const inspected = reviewSelected[item.question.id] === option.id
+            const state = `${option.isSelected ? 'selected' : ''} ${option.isCorrect ? 'right' : ''} ${inspected && !option.isCorrect ? 'wrong' : ''}`
+            return <div className="review-option-wrap" key={option.id}>
+              <button className={state} onClick={() => setReviewSelected(prev => ({ ...prev, [item.question.id]: option.id }))}>
+                <span className="letter">{String.fromCharCode(65 + index)}</span>
+                <span>{option.label}</span>
+                <small>{option.isSelected && 'Your answer'}{option.isSelected && option.isCorrect && ' - '}{option.isCorrect && 'Correct answer'}</small>
+              </button>
+              {inspected && <div className={`option-explanation ${option.isCorrect ? 'correct' : 'incorrect'}`}>
+                <strong>{option.isCorrect ? 'Correct - ' : 'Not quite - '}</strong>{option.explanation || item.question.explanation}
+              </div>}
             </div>
           })}
-        </div>
-        <div className={`answer-summary ${item.isCorrect ? 'correct' : 'incorrect'}`}>
-          <div>{item.isCorrect ? <CheckCircle2/> : <XCircle/>}<strong>{item.isCorrect ? 'You chose the correct answer.' : 'Correct answer'}</strong></div>
-          {!item.isCorrect && <p>{item.correctLabels.join('; ')}</p>}
-          {item.isAnswered && !item.isCorrect && <p><b>Your answer:</b> {item.selectedLabels.join('; ')}</p>}
-          {!item.isAnswered && <p><b>Your answer:</b> No answer selected</p>}
-          <p>{item.question.explanation}</p>
         </div>
       </article>)}
     </section>
