@@ -1,0 +1,12 @@
+{
+  "phase1_objective_catalog.json": 222066,
+  "phase1_objective_catalog.csv": 89328,
+  "phase1_trigger_catalog.json": 500847,
+  "phase2_legacy_mcq_audit.json": 105514,
+  "phase3_gold_questions.json": 493262,
+  "phase4_question_bank_1250.json": 2503552,
+  "phase4_question_bank_1250.js": 2503682,
+  "QA_REPORT.json": 946,
+  "README.md": 1541,
+  "CODEX_INTEGRATION_HANDOFF.md": 983
+}

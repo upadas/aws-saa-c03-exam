@@ -1,0 +1,32 @@
+{
+  "objective_count": 250,
+  "trigger_count": 1250,
+  "legacy_blocks_audited": 225,
+  "gold_question_count": 250,
+  "variant_question_count": 1250,
+  "domain_distribution": {
+    "Security": 375,
+    "Resilience": 325,
+    "Performance": 300,
+    "Cost": 250
+  },
+  "difficulty_distribution": {
+    "Easy": 250,
+    "Medium": 500,
+    "Hard": 500
+  },
+  "correct_answer_position_distribution": {
+    "D": 331,
+    "B": 285,
+    "A": 333,
+    "C": 301
+  },
+  "duplicate_stem_count": 0,
+  "validation_issues": [],
+  "notes": [
+    "All 1,250 questions are original transformations of objective intents, not copies of the legacy corpus.",
+    "Correct option placement is deterministically shuffled and balanced across A-D.",
+    "Automated validation does not replace expert editorial review, especially for nuanced AWS edge cases.",
+    "DMS and DataSync objectives are explicitly represented and prioritized in migration-related variants."
+  ]
+}

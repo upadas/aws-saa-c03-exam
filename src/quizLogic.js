@@ -42,6 +42,10 @@ function selectedToId(question, selected) {
   return typeof selected === 'number' ? makeOptionId(question.id, selected) : selected
 }
 
+function variantKey(question) {
+  return question.variant ? `${question.objectiveId || question.id}:variant-${question.variant}` : String(question.id)
+}
+
 export function getOptionRecords(question) {
   const answerIds = new Set(
     (question.answers || []).map(answer => selectedToId(question, answer)),
@@ -148,9 +152,12 @@ export function sampleWeighted(questions, count) {
 export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
   const eligible = questions.filter(question => {
     const domainMatch = !filters.domain || filters.domain === 'All' || question.domain === filters.domain
+    const serviceMatch = !filters.service || filters.service === 'All' || question.services?.includes(filters.service) || question.service === filters.service
+    const difficultyMatch = !filters.difficulty || filters.difficulty === 'All' || question.difficulty === filters.difficulty
     const objectiveMatch = !filters.objectiveIds?.length || filters.objectiveIds.includes(question.objectiveId)
     const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect'
-    return domainMatch && objectiveMatch && missedMatch
+    const masteredMatch = !filters.masteredOnly || (progress[question.objectiveId]?.mastery || 0) >= 0.85
+    return domainMatch && serviceMatch && difficultyMatch && objectiveMatch && missedMatch && masteredMatch
   })
   const remaining = [...eligible]
   const selected = []
@@ -194,16 +201,26 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
 
 export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
   const seenQuestionIds = new Set(objectiveProgress.seenQuestionIds || [])
+  const correctVariantIds = new Set(objectiveProgress.correctVariantIds || [])
   const attempts = objectiveProgress.attempts || 0
   const mastery = objectiveProgress.mastery || 0
+  const minimumCorrectVariants = question.adaptive?.minimumCorrectVariantsForMastery ||
+    objectiveProgress.minimumCorrectVariantsForMastery ||
+    2
+  const missWeight = question.adaptive?.masteryWeightOnMiss || 2
+  const correctWeight = question.adaptive?.masteryWeightOnCorrect || 0.65
+  const hasSeenExactQuestion = seenQuestionIds.has(question.id)
+  const hasCorrectVariant = correctVariantIds.has(variantKey(question))
   let weight = 1
 
-  if (!attempts) weight += 2
-  if (objectiveProgress.lastResult === 'incorrect') weight += 7
-  if (objectiveProgress.consecutiveCorrect === 1) weight += 4
-  if (!seenQuestionIds.has(question.id)) weight += 2.5
-  if (seenQuestionIds.has(question.id)) weight -= 0.75
-  if (mastery >= 0.8) weight -= 0.8
+  if (!attempts) weight += 3
+  if (attempts && mastery < 0.65) weight += (1 - mastery) * 3
+  if (objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
+  if ((objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
+  if (!hasSeenExactQuestion) weight += 3
+  if (hasSeenExactQuestion) weight *= 0.35
+  if (hasCorrectVariant) weight *= correctWeight
+  if (correctVariantIds.size >= minimumCorrectVariants) weight *= 0.25
   if (objectiveProgress.lastAttemptAt) {
     const daysSinceAttempt = (Date.now() - Date.parse(objectiveProgress.lastAttemptAt)) / 86400000
     if (daysSinceAttempt > 14) weight += 1.25
@@ -225,6 +242,8 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       correct: 0,
       consecutiveCorrect: 0,
       seenQuestionIds: [],
+      correctVariantIds: [],
+      minimumCorrectVariantsForMastery: question.adaptive?.minimumCorrectVariantsForMastery || 2,
       mastery: 0,
     }
     const isCorrect = answerMatches(question, answers[question.id] || [])
@@ -232,8 +251,22 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
     const correct = previous.correct + (isCorrect ? 1 : 0)
     const consecutiveCorrect = isCorrect ? previous.consecutiveCorrect + 1 : 0
     const seenQuestionIds = [...new Set([...(previous.seenQuestionIds || []), question.id])]
+    const correctVariantIds = [
+      ...new Set([
+        ...(previous.correctVariantIds || []),
+        ...(isCorrect ? [variantKey(question)] : []),
+      ]),
+    ]
+    const minimumCorrectVariantsForMastery = question.adaptive?.minimumCorrectVariantsForMastery ||
+      previous.minimumCorrectVariantsForMastery ||
+      2
     const accuracy = correct / attempts
     const streakScore = Math.min(consecutiveCorrect, 3) / 3
+    const variantScore = Math.min(correctVariantIds.length, minimumCorrectVariantsForMastery) / minimumCorrectVariantsForMastery
+    const rawMastery = accuracy * 0.55 + streakScore * 0.2 + variantScore * 0.25
+    const mastery = correctVariantIds.length >= minimumCorrectVariantsForMastery
+      ? Math.min(1, rawMastery)
+      : Math.min(0.84, rawMastery)
 
     next[objectiveId] = {
       ...previous,
@@ -246,7 +279,9 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       lastAttemptAt: timestamp,
       lastResult: isCorrect ? 'correct' : 'incorrect',
       seenQuestionIds,
-      mastery: Math.round(Math.min(1, accuracy * 0.65 + streakScore * 0.35) * 100) / 100,
+      correctVariantIds,
+      minimumCorrectVariantsForMastery,
+      mastery: Math.round(mastery * 100) / 100,
     }
   })
 

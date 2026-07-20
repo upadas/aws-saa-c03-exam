@@ -66,7 +66,10 @@ function App() {
   ))
   const [bankQuery, setBankQuery] = useState('')
   const [domainFilter, setDomainFilter] = useState('All')
+  const [serviceFilter, setServiceFilter] = useState('All')
+  const [objectiveFilter, setObjectiveFilter] = useState('All')
   const [difficultyFilter, setDifficultyFilter] = useState('All')
+  const [progressFilter, setProgressFilter] = useState('All')
   const [session, setSession] = useState(() => initialSaved.activeSession)
   const [saved, setSaved] = useState(() => initialSaved)
 
@@ -163,9 +166,16 @@ function App() {
         setQuery={setBankQuery}
         domain={domainFilter}
         setDomain={setDomainFilter}
+        service={serviceFilter}
+        setService={setServiceFilter}
+        objective={objectiveFilter}
+        setObjective={setObjectiveFilter}
         difficulty={difficultyFilter}
         setDifficulty={setDifficultyFilter}
+        progressFilter={progressFilter}
+        setProgressFilter={setProgressFilter}
         mastered={mastered}
+        objectiveProgress={objectiveProgress}
         setSaved={setSaved}
         startQuiz={startQuiz}
       />}
@@ -293,14 +303,61 @@ function Dashboard({
   </div>
 }
 
-function QuestionBank({ query, setQuery, domain, setDomain, difficulty, setDifficulty, mastered, setSaved, startQuiz }) {
+function QuestionBank({
+  query,
+  setQuery,
+  domain,
+  setDomain,
+  service,
+  setService,
+  objective,
+  setObjective,
+  difficulty,
+  setDifficulty,
+  progressFilter,
+  setProgressFilter,
+  mastered,
+  objectiveProgress,
+  setSaved,
+  startQuiz,
+}) {
   const [expandedIds, setExpandedIds] = useState([])
+  const serviceOptions = useMemo(() => (
+    [...new Set(questions.flatMap(question => question.services || []))].sort()
+  ), [])
+  const objectiveOptions = useMemo(() => (
+    [...questions.reduce((map, question) => {
+      if (!map.has(question.objectiveId)) {
+        map.set(question.objectiveId, {
+          objectiveId: question.objectiveId,
+          objectiveName: question.objectiveName,
+          domain: question.domain,
+          service: question.services[0],
+        })
+      }
+      return map
+    }, new Map()).values()]
+      .sort((a, b) => a.objectiveId.localeCompare(b.objectiveId))
+  ), [])
   const filtered = questions.filter(question => {
+    const state = objectiveProgress[question.objectiveId] || {}
+    const isMastered = mastered.has(question.id) || (state.mastery || 0) >= 0.85
+    const progressMatch = progressFilter === 'All' ||
+      (progressFilter === 'Missed' && state.lastResult === 'incorrect') ||
+      (progressFilter === 'Mastered' && isMastered) ||
+      (progressFilter === 'Unseen' && !state.attempts)
     const haystack = `${question.question} ${question.objectiveName} ${question.services.join(' ')} ${question.tags.join(' ')}`.toLowerCase()
     return (domain === 'All' || question.domain === domain) &&
+      (service === 'All' || question.services.includes(service)) &&
+      (objective === 'All' || question.objectiveId === objective) &&
       (difficulty === 'All' || question.difficulty === difficulty) &&
+      progressMatch &&
       haystack.includes(query.toLowerCase())
   })
+  const startFilteredPractice = () => {
+    const list = selectAdaptiveQuestions(filtered, objectiveProgress, Math.min(10, filtered.length))
+    if (list.length) startQuiz('practice', list.length, domain, list, { title: 'Filtered adaptive practice' })
+  }
   const toggleMastered = id => setSaved(prev => ({
     ...prev,
     mastered: prev.mastered.includes(id) ? prev.mastered.filter(item => item !== id) : [...prev.mastered, id],
@@ -312,15 +369,24 @@ function QuestionBank({ query, setQuery, domain, setDomain, difficulty, setDiffi
   return <div className="page bank-page">
     <div className="bank-header">
       <div><span>QUESTION LIBRARY</span><h1>{filtered.length} architecture scenarios</h1><p>Search by objective, service, tag, or scenario and browse explanations.</p></div>
-      <button className="primary" onClick={() => startQuiz('practice', 10)}><Target size={18}/> Adaptive 10</button>
+      <button className="primary" disabled={!filtered.length} onClick={startFilteredPractice}><Target size={18}/> Practice filtered</button>
     </div>
     <div className="bank-controls">
       <label className="search"><Search size={18}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search S3, VPC, resilience..."/></label>
       <select value={domain} onChange={event => setDomain(event.target.value)}>
         <option>All</option>{Object.keys(DOMAIN_META).map(item => <option key={item}>{item}</option>)}
       </select>
+      <select value={service} onChange={event => setService(event.target.value)}>
+        <option>All</option>{serviceOptions.map(item => <option key={item}>{item}</option>)}
+      </select>
+      <select value={objective} onChange={event => setObjective(event.target.value)}>
+        <option>All</option>{objectiveOptions.map(item => <option key={item} value={item.objectiveId}>{item.objectiveId} - {item.service}</option>)}
+      </select>
       <select value={difficulty} onChange={event => setDifficulty(event.target.value)}>
         <option>All</option><option>Easy</option><option>Medium</option><option>Hard</option>
+      </select>
+      <select value={progressFilter} onChange={event => setProgressFilter(event.target.value)}>
+        <option>All</option><option>Missed</option><option>Mastered</option><option>Unseen</option>
       </select>
     </div>
     <div className="bank-list">
