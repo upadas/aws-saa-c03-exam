@@ -33,12 +33,13 @@ test('questions preserve objective, variant, adaptive, and answer metadata', () 
     assert.match(question.objectiveId, /^SAA-\d{3}$/)
     assert.ok(question.objectiveName.length > 10, `${question.id} should have an objective name`)
     assert.ok(question.variant >= 1 && question.variant <= 5, `${question.id} should keep its variant number`)
-    assert.equal(question.options.length, 4, `${question.id} should have four options`)
-    assert.equal(question.correctOptionIds.length, 1, `${question.id} should have one correct option`)
+    assert.ok(question.options.length >= 4, `${question.id} should have at least four options`)
+    assert.ok(question.correctOptionIds.length >= 1 && question.correctOptionIds.length <= 3, `${question.id} should have one to three correct options`)
     assert.deepEqual(question.answers, question.correctOptionIds)
+    assert.ok(question.sourceCorrectOptionIds.length >= 1, `${question.id} should preserve source correct option ids`)
     assert.ok(question.explanation.length > 20, `${question.id} should explain the answer`)
     assert.equal(question.services.length, 1, `${question.id} should preserve the service`)
-    assert.equal(question.adaptive.minimumCorrectVariantsForMastery, 2)
+    assert.equal(question.adaptive.minimumCorrectVariantsForMastery, 3)
     assert.equal(question.adaptive.masteryWeightOnMiss, 2)
     assert.equal(question.adaptive.masteryWeightOnCorrect, 0.65)
 
@@ -72,7 +73,7 @@ test('each objective has exactly five variants', () => {
   })
 })
 
-test('domain, difficulty, and answer-position distributions match the QA report', () => {
+test('domain and difficulty distributions still match the QA report', () => {
   const domainDistribution = questions.reduce((distribution, question) => {
     const shortDomain = DOMAIN_META[question.domain].short
     distribution[shortDomain] = (distribution[shortDomain] || 0) + 1
@@ -85,7 +86,35 @@ test('domain, difficulty, and answer-position distributions match the QA report'
 
   assert.deepEqual(domainDistribution, qaReport.domain_distribution)
   assert.deepEqual(difficultyDistribution, qaReport.difficulty_distribution)
-  assert.deepEqual(getCorrectPositionDistribution(questions), qaReport.correct_answer_position_distribution)
+  assert.equal(
+    Object.values(getCorrectPositionDistribution(questions)).reduce((sum, count) => sum + count, 0),
+    questions.reduce((sum, question) => sum + question.correctOptionIds.length, 0),
+  )
+})
+
+test('normal practice sets do not repeat the same objective', () => {
+  questionSets.forEach(set => {
+    const setQuestions = set.questionIds.map(id => questions.find(question => question.id === id))
+    assert.equal(new Set(setQuestions.map(question => question.objectiveId)).size, setQuestions.length)
+  })
+})
+
+test('question bank includes single, choose-two, and choose-three items', () => {
+  const typeCounts = questions.reduce((counts, question) => {
+    const key = question.correctOptionIds.length === 3
+      ? 'chooseThree'
+      : question.correctOptionIds.length === 2
+        ? 'chooseTwo'
+        : 'single'
+    counts[key] = (counts[key] || 0) + 1
+    return counts
+  }, {})
+
+  assert.deepEqual(typeCounts, {
+    single: 750,
+    chooseTwo: 250,
+    chooseThree: 250,
+  })
 })
 
 test('session shuffling keeps generated correct option ids answerable', () => {

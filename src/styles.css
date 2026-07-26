@@ -211,11 +211,15 @@ button{cursor:pointer}
 .navigator{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:22px}
 .navigator button{height:38px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--soft);position:relative}
 .navigator button.answered{background:#ecfdfb;color:var(--teal);border-color:#a7e7df}
+.navigator button.correct{background:#ecfdfb;color:var(--teal);border-color:#0d9488}
+.navigator button.incorrect{background:#fef2f2;color:var(--red);border-color:#ef9a9a}
 .navigator button.current{border-color:var(--ink);color:var(--ink)}
+.navigator button.current.correct{box-shadow:0 0 0 2px rgba(13,148,136,.14)}
+.navigator button.current.incorrect{box-shadow:0 0 0 2px rgba(185,28,28,.13)}
 .navigator button.flagged:after{content:'';position:absolute;top:5px;right:5px;width:5px;height:5px;border-radius:50%;background:var(--amber)}
 .legend{display:flex;gap:15px;font-size:11px;color:var(--soft);margin:18px 0}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
-.dot.answered{background:var(--teal)}.dot.flagged{background:var(--amber)}
+.dot.answered,.dot.correct{background:var(--teal)}.dot.incorrect{background:var(--red)}.dot.flagged{background:var(--amber)}
 .end-btn{width:100%;margin-top:20px;padding:12px;background:transparent;border:1px solid var(--line-strong);border-radius:9px;color:var(--text)}
 .question-panel{display:flex;flex-direction:column;min-width:0;background:var(--paper)}
 .question-top{min-height:94px;border-bottom:1px solid var(--line);padding:20px 5vw;display:flex;justify-content:space-between;gap:20px;align-items:center}
@@ -287,6 +291,7 @@ button{cursor:pointer}
 .review-card header strong{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:white;background:var(--teal);border-radius:999px;padding:5px 8px}
 .review-card.missed header strong{background:var(--red)}
 .review-card h2{font-size:16px;line-height:1.55;margin:0 0 16px;font-weight:600}
+.review-card.missed h2{color:var(--red)}
 .review-options{display:grid;gap:8px}
 .review-option-wrap{display:grid;gap:0}
 .review-options small{color:var(--soft);font-size:11px;text-align:right}

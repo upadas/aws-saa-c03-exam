@@ -7,6 +7,7 @@ export const DOMAIN_META = {
 
 export const EXAM_QUESTION_COUNT = 65
 export const EXAM_DURATION_SECONDS = 130 * 60
+export const MIN_CORRECT_VARIANTS_FOR_MASTERY = 3
 
 const SET_DOMAIN_COUNTS = {
   'Secure Architectures': 3,
@@ -44,6 +45,10 @@ function selectedToId(question, selected) {
 
 function variantKey(question) {
   return question.variant ? `${question.objectiveId || question.id}:variant-${question.variant}` : String(question.id)
+}
+
+function objectiveKey(question) {
+  return question.objectiveId || `question-${question.id}`
 }
 
 export function getOptionRecords(question) {
@@ -132,38 +137,67 @@ export function buildQuestionReview(question, selected = []) {
 export function sampleWeighted(questions, count) {
   const domains = Object.keys(DOMAIN_META)
   const chosen = []
+  const selectedObjectives = new Set()
 
   domains.forEach((domain, index) => {
     const quota = index === domains.length - 1
       ? count - chosen.length
       : Math.round(count * DOMAIN_META[domain].weight / 100)
     const pool = shuffle(questions.filter(question => question.domain === domain))
-    chosen.push(...pool.slice(0, Math.min(quota, pool.length)))
+    const picked = []
+
+    for (const question of pool) {
+      const objectiveId = objectiveKey(question)
+      if (selectedObjectives.has(objectiveId)) continue
+      picked.push(question)
+      selectedObjectives.add(objectiveId)
+      if (picked.length === quota) break
+    }
+
+    chosen.push(...picked)
   })
 
   if (chosen.length < count) {
     const ids = new Set(chosen.map(question => question.id))
-    chosen.push(...shuffle(questions.filter(question => !ids.has(question.id))).slice(0, count - chosen.length))
+    const fallback = []
+
+    for (const question of shuffle(questions.filter(question => !ids.has(question.id)))) {
+      const objectiveId = objectiveKey(question)
+      if (selectedObjectives.has(objectiveId)) continue
+      fallback.push(question)
+      selectedObjectives.add(objectiveId)
+      if (fallback.length === count - chosen.length) break
+    }
+
+    chosen.push(...fallback)
   }
 
   return shuffle(chosen).slice(0, count)
 }
 
 export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
+  const allowRepeatedObjectives = Boolean(filters.allowRepeatedObjectives)
   const eligible = questions.filter(question => {
     const domainMatch = !filters.domain || filters.domain === 'All' || question.domain === filters.domain
     const serviceMatch = !filters.service || filters.service === 'All' || question.services?.includes(filters.service) || question.service === filters.service
     const difficultyMatch = !filters.difficulty || filters.difficulty === 'All' || question.difficulty === filters.difficulty
     const objectiveMatch = !filters.objectiveIds?.length || filters.objectiveIds.includes(question.objectiveId)
-    const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect'
+    const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect' || progress[question.objectiveId]?.needsDrill
     const masteredMatch = !filters.masteredOnly || (progress[question.objectiveId]?.mastery || 0) >= 0.85
     return domainMatch && serviceMatch && difficultyMatch && objectiveMatch && missedMatch && masteredMatch
   })
   const remaining = [...eligible]
   const selected = []
+  const selectedObjectives = new Set()
 
   while (selected.length < count && remaining.length) {
-    const weighted = remaining.map(question => ({
+    const candidates = allowRepeatedObjectives
+      ? remaining
+      : remaining.filter(question => !selectedObjectives.has(objectiveKey(question)))
+
+    if (!candidates.length) break
+
+    const weighted = candidates.map(question => ({
       question,
       weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
     }))
@@ -179,8 +213,10 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
       }
     }
 
-    selected.push(weighted[chosenIndex].question)
-    remaining.splice(chosenIndex, 1)
+    const chosenQuestion = weighted[chosenIndex].question
+    selected.push(chosenQuestion)
+    selectedObjectives.add(objectiveKey(chosenQuestion))
+    remaining.splice(remaining.indexOf(chosenQuestion), 1)
   }
 
   if (selected.length < count && filters.missedOnly) {
@@ -206,7 +242,7 @@ export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
   const mastery = objectiveProgress.mastery || 0
   const minimumCorrectVariants = question.adaptive?.minimumCorrectVariantsForMastery ||
     objectiveProgress.minimumCorrectVariantsForMastery ||
-    2
+    MIN_CORRECT_VARIANTS_FOR_MASTERY
   const missWeight = question.adaptive?.masteryWeightOnMiss || 2
   const correctWeight = question.adaptive?.masteryWeightOnCorrect || 0.65
   const hasSeenExactQuestion = seenQuestionIds.has(question.id)
@@ -216,6 +252,7 @@ export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
   if (!attempts) weight += 3
   if (attempts && mastery < 0.65) weight += (1 - mastery) * 3
   if (objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
+  if (objectiveProgress.needsDrill && objectiveProgress.lastResult !== 'incorrect') weight += missWeight * 2
   if ((objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
   if (!hasSeenExactQuestion) weight += 3
   if (hasSeenExactQuestion) weight *= 0.35
@@ -243,12 +280,15 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       consecutiveCorrect: 0,
       seenQuestionIds: [],
       correctVariantIds: [],
-      minimumCorrectVariantsForMastery: question.adaptive?.minimumCorrectVariantsForMastery || 2,
+      misses: 0,
+      needsDrill: false,
+      minimumCorrectVariantsForMastery: question.adaptive?.minimumCorrectVariantsForMastery || MIN_CORRECT_VARIANTS_FOR_MASTERY,
       mastery: 0,
     }
     const isCorrect = answerMatches(question, answers[question.id] || [])
     const attempts = previous.attempts + 1
     const correct = previous.correct + (isCorrect ? 1 : 0)
+    const misses = (previous.misses || 0) + (isCorrect ? 0 : 1)
     const consecutiveCorrect = isCorrect ? previous.consecutiveCorrect + 1 : 0
     const seenQuestionIds = [...new Set([...(previous.seenQuestionIds || []), question.id])]
     const correctVariantIds = [
@@ -259,7 +299,7 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
     ]
     const minimumCorrectVariantsForMastery = question.adaptive?.minimumCorrectVariantsForMastery ||
       previous.minimumCorrectVariantsForMastery ||
-      2
+      MIN_CORRECT_VARIANTS_FOR_MASTERY
     const accuracy = correct / attempts
     const streakScore = Math.min(consecutiveCorrect, 3) / 3
     const variantScore = Math.min(correctVariantIds.length, minimumCorrectVariantsForMastery) / minimumCorrectVariantsForMastery
@@ -267,6 +307,8 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
     const mastery = correctVariantIds.length >= minimumCorrectVariantsForMastery
       ? Math.min(1, rawMastery)
       : Math.min(0.84, rawMastery)
+    const roundedMastery = Math.round(mastery * 100) / 100
+    const needsDrill = (misses > 0 || previous.needsDrill) && roundedMastery < 0.85
 
     next[objectiveId] = {
       ...previous,
@@ -275,13 +317,15 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       domain: previous.domain || question.domain,
       attempts,
       correct,
+      misses,
       consecutiveCorrect,
       lastAttemptAt: timestamp,
       lastResult: isCorrect ? 'correct' : 'incorrect',
       seenQuestionIds,
       correctVariantIds,
+      needsDrill,
       minimumCorrectVariantsForMastery,
-      mastery: Math.round(mastery * 100) / 100,
+      mastery: roundedMastery,
     }
   })
 
@@ -360,12 +404,18 @@ export function validateQuestionSets(questionSets, questions) {
     }
 
     const counts = Object.fromEntries(Object.keys(DOMAIN_META).map(domain => [domain, 0]))
+    const objectiveIds = new Set()
     set.questionIds.forEach(id => {
       const question = questionById.get(id)
       if (!question) {
         issues.push(`${set.name} references missing question ${id}.`)
         return
       }
+      const objectiveId = objectiveKey(question)
+      if (objectiveIds.has(objectiveId)) {
+        issues.push(`${set.name} repeats objective ${objectiveId}.`)
+      }
+      objectiveIds.add(objectiveId)
       counts[question.domain] += 1
     })
 

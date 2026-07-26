@@ -114,19 +114,58 @@ test('adaptive selection boosts missed objectives and avoids duplicate questions
   )
 })
 
-test('updateObjectiveProgress tracks objective mastery across variants', () => {
-  const sessionQuestions = [
-    createSessionQuestion({ ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
-    createSessionQuestion({ ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
+test('adaptive drill mode can intentionally repeat an objective', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
   ]
-  const answers = Object.fromEntries(sessionQuestions.map(question => [question.id, question.answers]))
-  const progress = updateObjectiveProgress({}, sessionQuestions, answers, '2026-07-19T00:00:00.000Z')
+  const sample = selectAdaptiveQuestions(questions, {}, 2, { objectiveIds: ['s3-endpoint'], allowRepeatedObjectives: true }, () => 0)
 
-  assert.equal(progress['s3-endpoint'].attempts, 2)
-  assert.equal(progress['s3-endpoint'].correct, 2)
-  assert.equal(progress['s3-endpoint'].consecutiveCorrect, 2)
-  assert.equal(progress['s3-endpoint'].seenQuestionIds.length, 2)
-  assert.ok(progress['s3-endpoint'].mastery > 0.8)
+  assert.equal(sample.length, 2)
+  assert.deepEqual(sample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+})
+
+test('updateObjectiveProgress requires three correct variants for mastery', () => {
+  const sessionQuestions = [
+    createSessionQuestion({ ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 1 }, () => 0),
+    createSessionQuestion({ ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 2 }, () => 0),
+    createSessionQuestion({ ...makeQuestion(3, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 3 }, () => 0),
+  ]
+  const firstTwoAnswers = Object.fromEntries(sessionQuestions.slice(0, 2).map(question => [question.id, question.answers]))
+  const firstTwoProgress = updateObjectiveProgress({}, sessionQuestions.slice(0, 2), firstTwoAnswers, '2026-07-19T00:00:00.000Z')
+  const answers = Object.fromEntries(sessionQuestions.map(question => [question.id, question.answers]))
+  const progress = updateObjectiveProgress(firstTwoProgress, sessionQuestions.slice(2), answers, '2026-07-19T00:00:00.000Z')
+
+  assert.equal(firstTwoProgress['s3-endpoint'].attempts, 2)
+  assert.equal(firstTwoProgress['s3-endpoint'].correctVariantIds.length, 2)
+  assert.ok(firstTwoProgress['s3-endpoint'].mastery < 0.85)
+  assert.equal(progress['s3-endpoint'].attempts, 3)
+  assert.equal(progress['s3-endpoint'].correct, 3)
+  assert.equal(progress['s3-endpoint'].consecutiveCorrect, 3)
+  assert.equal(progress['s3-endpoint'].seenQuestionIds.length, 3)
+  assert.equal(progress['s3-endpoint'].correctVariantIds.length, 3)
+  assert.ok(progress['s3-endpoint'].mastery >= 0.85)
+})
+
+test('missed objectives stay in drill until three variants are correct', () => {
+  const sessionQuestions = [1, 2, 3, 4].map(variant =>
+    createSessionQuestion({ ...makeQuestion(variant, 'Secure Architectures'), objectiveId: 's3-endpoint', variant }, () => 0),
+  )
+  const afterMiss = updateObjectiveProgress({}, [sessionQuestions[0]], {}, '2026-07-19T00:00:00.000Z')
+  const oneCorrectAnswer = { [sessionQuestions[1].id]: sessionQuestions[1].answers }
+  const afterOneCorrect = updateObjectiveProgress(afterMiss, [sessionQuestions[1]], oneCorrectAnswer, '2026-07-19T00:00:00.000Z')
+  const remainingAnswers = Object.fromEntries(sessionQuestions.slice(2).map(question => [question.id, question.answers]))
+  const afterThreeCorrect = updateObjectiveProgress(afterOneCorrect, sessionQuestions.slice(2), remainingAnswers, '2026-07-19T00:00:00.000Z')
+  const drillSample = selectAdaptiveQuestions(sessionQuestions, afterOneCorrect, 2, { missedOnly: true, allowRepeatedObjectives: true }, () => 0)
+
+  assert.equal(afterMiss['s3-endpoint'].lastResult, 'incorrect')
+  assert.equal(afterMiss['s3-endpoint'].needsDrill, true)
+  assert.equal(afterOneCorrect['s3-endpoint'].lastResult, 'correct')
+  assert.equal(afterOneCorrect['s3-endpoint'].needsDrill, true)
+  assert.deepEqual(drillSample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+  assert.equal(afterThreeCorrect['s3-endpoint'].correctVariantIds.length, 3)
+  assert.equal(afterThreeCorrect['s3-endpoint'].needsDrill, false)
 })
 
 test('getCorrectPositionDistribution reports displayed correct positions', () => {
@@ -164,6 +203,23 @@ test('sampleWeighted returns a 65-question blueprint-weighted exam when enough q
     'High-Performing Architectures': 16,
     'Cost-Optimized Architectures': 12,
   })
+})
+
+test('sampleWeighted does not repeat objectives when variants are available', () => {
+  const questions = Object.keys(DOMAIN_META).flatMap((domain, domainIndex) =>
+    Array.from({ length: 10 }, (_, objectiveIndex) =>
+      Array.from({ length: 3 }, (_, variantIndex) => ({
+        ...makeQuestion(domainIndex * 100 + objectiveIndex * 10 + variantIndex, domain),
+        objectiveId: `${domain}-objective-${objectiveIndex}`,
+        variant: variantIndex + 1,
+      })),
+    ).flat(),
+  )
+
+  const sample = sampleWeighted(questions, 20)
+
+  assert.equal(sample.length, 20)
+  assert.equal(new Set(sample.map(question => question.objectiveId)).size, sample.length)
 })
 
 test('validateQuestionSets requires 10 blueprint-aligned sets of 10 questions', () => {

@@ -32,13 +32,13 @@ No backend or environment variables are required. Progress is stored in the brow
 ## Included
 
 - Dashboard and official-domain weighting display
-- 1,250 original single-answer scenario variants
+- 1,250 original scenario variants with single-answer, choose-two, and choose-three formats
 - 250 objectives with five adaptive variants each
 - 10 blueprint-weighted starter practice sets
 - Quick practice, domain practice, and 65-question / 130-minute exam mode
 - Explanations, question flags, navigation, results, and domain analytics
 - Searchable question bank with domain, service, objective, difficulty, missed, and mastered filters
-- Objective mastery that requires at least two correct variants
+- Objective mastery that requires at least three correct variants
 - Responsive desktop/mobile design
 
 ## Content note

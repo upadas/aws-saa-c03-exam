@@ -87,7 +87,7 @@ function App() {
     ? Math.round(saved.attempts.reduce((sum, attempt) => sum + attempt.correct / attempt.total * 100, 0) / saved.attempts.length)
     : 0
   const weakObjectives = progressList
-    .filter(item => item.attempts && (item.lastResult === 'incorrect' || item.mastery < 0.65))
+    .filter(item => item.attempts && (item.needsDrill || item.lastResult === 'incorrect' || item.mastery < 0.65))
     .sort((a, b) => (a.mastery || 0) - (b.mastery || 0))
     .slice(0, 4)
   const masteredObjectives = progressList.filter(item => item.mastery >= 0.85).length
@@ -98,9 +98,9 @@ function App() {
     if (!list && mode === 'exam') {
       list = sampleWeighted(questions, Math.min(count, questions.length))
     } else if (!list && mode === 'missed') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { missedOnly: true })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { missedOnly: true, allowRepeatedObjectives: true })
     } else if (!list && mode === 'objective') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [] })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [], allowRepeatedObjectives: true })
     } else if (!list) {
       list = selectAdaptiveQuestions(questions, objectiveProgress, count, { domain })
     }
@@ -288,7 +288,7 @@ function Dashboard({
         </div>
         <div className="coach-box">
           <h3>Progress</h3>
-          <p>{masteredQuestions} questions marked mastered. Objective mastery is tracked separately from manual overrides.</p>
+          <p>{masteredQuestions} questions marked mastered. Objective mastery now requires three correct variants and is tracked separately from manual overrides.</p>
         </div>
         <div className="coach-box">
           <h3>Weak objectives</h3>
@@ -447,6 +447,12 @@ function Quiz({ session, setSession, finishQuiz }) {
   })
   const go = index => setSession({ ...session, index })
   const answered = Object.keys(session.answers).filter(id => session.answers[id]?.length).length
+  const navigationStatus = item => {
+    const selectedAnswers = session.answers[item.id] || []
+    if (!session.checked[item.id] && !session.result) return ''
+    if (!selectedAnswers.length) return ''
+    return answerMatches(item, selectedAnswers) ? 'correct' : 'incorrect'
+  }
 
   return <div className="quiz-layout">
     <aside className="quiz-side">
@@ -455,9 +461,9 @@ function Quiz({ session, setSession, finishQuiz }) {
       <div className="progress-copy"><span>Progress</span><strong>{answered}/{session.questions.length}</strong></div>
       <div className="progress"><span style={{ width: `${answered / session.questions.length * 100}%` }}></span></div>
       <div className="navigator">
-        {session.questions.map((item, index) => <button key={item.id} onClick={() => go(index)} className={`${index === session.index ? 'current' : ''} ${session.answers[item.id]?.length ? 'answered' : ''} ${session.flagged.includes(item.id) ? 'flagged' : ''}`}>{index + 1}</button>)}
+        {session.questions.map((item, index) => <button key={item.id} onClick={() => go(index)} className={`${index === session.index ? 'current' : ''} ${session.answers[item.id]?.length ? 'answered' : ''} ${navigationStatus(item)} ${session.flagged.includes(item.id) ? 'flagged' : ''}`}>{index + 1}</button>)}
       </div>
-      <div className="legend"><span><i className="dot answered"></i>Answered</span><span><i className="dot flagged"></i>Flagged</span></div>
+      <div className="legend"><span><i className="dot correct"></i>Correct</span><span><i className="dot incorrect"></i>Incorrect</span><span><i className="dot flagged"></i>Flagged</span></div>
       <button className="end-btn" onClick={finishQuiz}>Finish session</button>
     </aside>
     <section className="question-panel">
