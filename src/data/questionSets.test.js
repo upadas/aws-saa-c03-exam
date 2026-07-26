@@ -117,6 +117,34 @@ test('question bank includes single, choose-two, and choose-three items', () => 
   })
 })
 
+test('question bank displays exam-style compound scenarios and nuanced distractors', () => {
+  const averagePromptLength = questions.reduce((sum, question) => sum + question.question.length, 0) / questions.length
+  const multiAnswerQuestions = questions.filter(question => question.correctOptionIds.length > 1)
+  const hardQuestions = questions.filter(question => question.difficulty === 'Hard')
+  const nuancedDistractorQuestions = questions.filter(question => question.options.some(option => (
+    !option.correct
+      && /\b(even though|assuming|without|instead of|only|bypassing|omitting|leaving|relying)\b/i.test(option.text)
+  )))
+  const s3EndpointQuestion = questions.find(question => question.id === 'Q-SAA-031-5')
+  const transferAccelerationQuestion = questions.find(question => question.id === 'Q-SAA-102-5')
+
+  assert.ok(averagePromptLength > 700, 'questions should read like scenario stems, not flashcards')
+  assert.ok(
+    multiAnswerQuestions.every(question => question.question.length > 650),
+    'multi-answer variants should include compound scenario constraints',
+  )
+  assert.ok(
+    hardQuestions.every(question => /proof of concept|production readiness|failure path/i.test(question.question)),
+    'hard variants should include production-readiness tradeoffs',
+  )
+  assert.ok(
+    nuancedDistractorQuestions.length > questions.length * 0.75,
+    'most questions should contain at least one plausible near-miss distractor',
+  )
+  assert.match(s3EndpointQuestion.question, /gateway endpoint and route-table update/i)
+  assert.match(transferAccelerationQuestion.question, /accelerate endpoint|multipart upload/i)
+})
+
 test('session shuffling keeps generated correct option ids answerable', () => {
   const sessionQuestion = createSessionQuestion(questions[0], () => 0.42)
 
