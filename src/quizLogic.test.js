@@ -92,7 +92,7 @@ test('session option order stays stable when stored on the session question', ()
   assert.deepEqual(orderAfterNavigation, orderBefore)
 })
 
-test('adaptive selection boosts missed objectives and avoids duplicate questions', () => {
+test('normal adaptive practice avoids recently seen objectives even after a miss', () => {
   const questions = [
     { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
     { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
@@ -109,14 +109,44 @@ test('adaptive selection boosts missed objectives and avoids duplicate questions
       mastery: 0,
     },
   }
-  const sample = selectAdaptiveQuestions(questions, progress, 2, {}, () => 0)
+  const sample = selectAdaptiveQuestions(questions, progress, 1, {}, () => 0)
 
-  assert.equal(new Set(sample.map(question => question.id)).size, sample.length)
-  assert.equal(sample[0].objectiveId, 's3-endpoint')
+  assert.equal(sample[0].objectiveId, 'kms-policy')
   assert.ok(
-    adaptiveQuestionWeight(questions[1], progress['s3-endpoint']) >
+    adaptiveQuestionWeight(questions[1], progress['s3-endpoint'], { boostDrill: true }) >
       adaptiveQuestionWeight(questions[2], undefined),
   )
+})
+
+test('missed-concept mode drills the same objective with a different variant', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
+  ]
+  const progress = {
+    's3-endpoint': {
+      objectiveId: 's3-endpoint',
+      attempts: 1,
+      correct: 0,
+      consecutiveCorrect: 0,
+      lastResult: 'incorrect',
+      needsDrill: true,
+      seenQuestionIds: [1],
+      mastery: 0,
+    },
+  }
+  const sample = selectAdaptiveQuestions(
+    questions,
+    progress,
+    2,
+    { missedOnly: true, allowRepeatedObjectives: true, boostDrill: true },
+    () => 0,
+  )
+
+  assert.equal(new Set(sample.map(question => question.id)).size, sample.length)
+  assert.deepEqual(sample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+  assert.equal(sample[0].id, 2)
 })
 
 test('adaptive practice can enforce a mixed single and multiple response pattern', () => {

@@ -24,7 +24,7 @@ import {
 import './styles.css'
 
 const storageSchemaVersion = 3
-const questionBankVersion = 'saa-c03-1250-compound-practice-v2'
+const questionBankVersion = 'saa-c03-1250-compound-practice-v3'
 const storageKey = 'saa-c03-progress-v2'
 const legacyStorageKey = 'saa-c03-progress-v1'
 
@@ -86,6 +86,32 @@ function loadSaved() {
   return defaultSaved
 }
 
+function progressSeenQuestionIds(objectiveProgress = {}) {
+  return [...new Set(Object.values(objectiveProgress).flatMap(item => item.seenQuestionIds || []))]
+}
+
+function progressSeenObjectiveIds(objectiveProgress = {}) {
+  return Object.values(objectiveProgress)
+    .filter(item => item.attempts)
+    .map(item => item.objectiveId)
+    .filter(Boolean)
+}
+
+function recentQuestionIdsFromSessions(saved, activeSession, sessionLimit = 8) {
+  const activeIds = activeSession?.questionIds || activeSession?.questions?.map(question => question.id) || []
+  const completedIds = (saved.completedSessions || [])
+    .slice(0, sessionLimit)
+    .flatMap(item => item.questionIds || [])
+
+  return [...new Set([...activeIds, ...completedIds])]
+}
+
+function objectiveIdsForQuestionIds(questionIds, questionById) {
+  return [...new Set(questionIds
+    .map(id => questionById.get(id)?.objectiveId)
+    .filter(Boolean))]
+}
+
 function App() {
   const [initialSaved] = useState(loadSaved)
   const [bank, setBank] = useState(null)
@@ -140,18 +166,40 @@ function App() {
 
   const startQuiz = (mode, count = 10, domain = 'All', questionList = null, options = {}) => {
     let list = questionList
+    const seenQuestionIds = progressSeenQuestionIds(objectiveProgress)
+    const recentQuestionIds = recentQuestionIdsFromSessions(saved, session)
+    const memoryFilters = {
+      avoidQuestionIds: seenQuestionIds,
+      avoidObjectiveIds: progressSeenObjectiveIds(objectiveProgress),
+      recentQuestionIds,
+      recentObjectiveIds: objectiveIdsForQuestionIds(recentQuestionIds, questionById),
+    }
 
     if (!list && mode === 'exam') {
       list = sampleWeighted(questions, Math.min(count, questions.length))
     } else if (!list && mode === 'missed') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { missedOnly: true, allowRepeatedObjectives: true })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        missedOnly: true,
+        allowRepeatedObjectives: true,
+        boostDrill: true,
+        avoidQuestionIds: seenQuestionIds,
+        recentQuestionIds,
+      })
     } else if (!list && mode === 'objective') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [], allowRepeatedObjectives: true })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        objectiveIds: options.objectiveIds || [],
+        allowRepeatedObjectives: true,
+        boostDrill: true,
+        avoidQuestionIds: seenQuestionIds,
+        recentQuestionIds,
+      })
     } else if (!list) {
       list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        ...memoryFilters,
         domain,
         domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
         responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+        boostDrill: false,
       })
     }
 
@@ -177,8 +225,7 @@ function App() {
   }
 
   const startQuestionSet = set => {
-    const list = set.questionIds.map(id => questionById.get(id)).filter(Boolean)
-    startQuiz('set', list.length, 'All', list, { setId: set.id, title: set.name })
+    startQuiz('set', set.questionIds.length, 'All', null, { setId: set.id, title: set.name })
   }
 
   const startExamForm = exam => {
@@ -377,7 +424,7 @@ function Dashboard({
         <div className="rail-label">Coach notes</div>
         <div className="coach-box">
           <h3>Adaptive engine</h3>
-          <p>Missed objectives get boosted, and the next attempt prefers a different variant before repeating exact wording.</p>
+          <p>Normal practice prioritizes unseen objectives. Missed concepts drills repeat the intent with fresh variants before any exact wording returns.</p>
         </div>
         <div className="coach-box">
           <h3>Progress</h3>
@@ -451,8 +498,11 @@ function QuestionBank({
   const startFilteredPractice = () => {
     const count = Math.min(10, filtered.length)
     const list = selectAdaptiveQuestions(filtered, objectiveProgress, count, {
+      avoidQuestionIds: progressSeenQuestionIds(objectiveProgress),
+      avoidObjectiveIds: progressSeenObjectiveIds(objectiveProgress),
       domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
       responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+      boostDrill: false,
     })
     if (list.length) startQuiz('practice', list.length, domain, list, { title: 'Filtered adaptive practice' })
   }

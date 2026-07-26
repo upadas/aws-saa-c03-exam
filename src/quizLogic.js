@@ -202,10 +202,14 @@ export function sampleWeighted(questions, count) {
   return shuffle(chosen).slice(0, count)
 }
 
-function pickWeightedQuestion(candidates, progress, random) {
+function asSet(values = []) {
+  return values instanceof Set ? values : new Set(values || [])
+}
+
+function pickWeightedQuestion(candidates, progress, random, options = {}) {
   const weighted = candidates.map(question => ({
     question,
-    weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
+    weight: adaptiveQuestionWeight(question, progress[question.objectiveId], options),
   }))
   const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
   let cursor = random() * totalWeight
@@ -256,8 +260,13 @@ function avoidAdjacentObjectiveRepeats(selected) {
 
 export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
   const allowRepeatedObjectives = Boolean(filters.allowRepeatedObjectives)
+  const boostDrill = filters.boostDrill ?? Boolean(filters.missedOnly || filters.objectiveIds?.length || allowRepeatedObjectives)
   const domainPattern = filters.domainPattern || null
   const responsePattern = filters.responsePattern || null
+  const avoidQuestionIds = asSet(filters.avoidQuestionIds)
+  const avoidObjectiveIds = asSet(filters.avoidObjectiveIds)
+  const recentQuestionIds = asSet(filters.recentQuestionIds)
+  const recentObjectiveIds = asSet(filters.recentObjectiveIds)
   const responseTargets = responsePattern?.reduce((counts, answerCount) => ({
     ...counts,
     [answerCount]: (counts[answerCount] || 0) + 1,
@@ -284,10 +293,31 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
   const availableCandidates = predicate => remaining.filter(question => (
     predicate(question) && !selectedObjectives.has(objectiveKey(question))
   ))
+  const freshnessTier = question => {
+    const objectiveId = objectiveKey(question)
+    const state = progress[objectiveId] || {}
+    const seenQuestionIds = new Set(state.seenQuestionIds || [])
+    const hasSeenExactQuestion = seenQuestionIds.has(question.id) || avoidQuestionIds.has(question.id)
+    const hasSeenObjective = Boolean(state.attempts) || avoidObjectiveIds.has(objectiveId)
+    const hasRecentExactQuestion = recentQuestionIds.has(question.id)
+    const hasRecentObjective = recentObjectiveIds.has(objectiveId)
+
+    if (!hasSeenExactQuestion && !hasSeenObjective && !hasRecentExactQuestion && !hasRecentObjective) return 0
+    if (!hasSeenExactQuestion && !hasRecentExactQuestion && !hasRecentObjective) return 1
+    if (!hasSeenExactQuestion && !hasRecentExactQuestion) return 2
+    if (!hasRecentExactQuestion) return 3
+    return 4
+  }
+  const preferFreshness = candidates => {
+    if (!candidates.length) return candidates
+    const bestTier = Math.min(...candidates.map(freshnessTier))
+    return candidates.filter(question => freshnessTier(question) === bestTier)
+  }
   const preferServiceDiversity = candidates => {
     const diverse = candidates.filter(question => !selectedServices.has(question.service || question.services?.[0]))
     return diverse.length ? diverse : candidates
   }
+  const preferredCandidates = candidates => preferServiceDiversity(preferFreshness(candidates))
 
   if (
     domainPattern?.length === count &&
@@ -301,32 +331,44 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
         () => availableCandidates(question => question.domain === domain),
         () => availableCandidates(question => responseCount(question) === answerCount),
         () => availableCandidates(() => true),
-      ].map(factory => preferServiceDiversity(factory())).find(pool => pool.length)
+      ].map(factory => preferredCandidates(factory())).find(pool => pool.length)
 
-      if (candidates?.length) takeQuestion(pickWeightedQuestion(candidates, progress, random))
+      if (candidates?.length) takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+        boostDrill,
+        avoidQuestionIds,
+        recentQuestionIds,
+      }))
     })
   }
 
   if (responseTargets && !domainPattern && !allowRepeatedObjectives) {
     Object.entries(responseTargets).forEach(([answerCount, target]) => {
       while (selected.filter(question => responseCount(question) === Number(answerCount)).length < target) {
-        const candidates = preferServiceDiversity(availableCandidates(question => (
+        const candidates = preferredCandidates(availableCandidates(question => (
           responseCount(question) === Number(answerCount)
         )))
         if (!candidates.length) break
-        takeQuestion(pickWeightedQuestion(candidates, progress, random))
+        takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+          boostDrill,
+          avoidQuestionIds,
+          recentQuestionIds,
+        }))
       }
     })
   }
 
   while (selected.length < count && remaining.length) {
     const candidates = allowRepeatedObjectives
-      ? remaining
-      : preferServiceDiversity(remaining.filter(question => !selectedObjectives.has(objectiveKey(question))))
+      ? preferFreshness(remaining)
+      : preferredCandidates(remaining.filter(question => !selectedObjectives.has(objectiveKey(question))))
 
     if (!candidates.length) break
 
-    takeQuestion(pickWeightedQuestion(candidates, progress, random))
+    takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+      boostDrill,
+      avoidQuestionIds,
+      recentQuestionIds,
+    }))
   }
 
   if (selected.length < count && filters.missedOnly) {
@@ -347,8 +389,11 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
   ).slice(0, count)
 }
 
-export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
+export function adaptiveQuestionWeight(question, objectiveProgress = {}, options = {}) {
+  const boostDrill = options.boostDrill ?? true
   const seenQuestionIds = new Set(objectiveProgress.seenQuestionIds || [])
+  const avoidQuestionIds = asSet(options.avoidQuestionIds)
+  const recentQuestionIds = asSet(options.recentQuestionIds)
   const correctVariantIds = new Set(objectiveProgress.correctVariantIds || [])
   const attempts = objectiveProgress.attempts || 0
   const mastery = objectiveProgress.mastery || 0
@@ -357,18 +402,21 @@ export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
     MIN_CORRECT_VARIANTS_FOR_MASTERY
   const missWeight = question.adaptive?.masteryWeightOnMiss || 2
   const correctWeight = question.adaptive?.masteryWeightOnCorrect || 0.65
-  const hasSeenExactQuestion = seenQuestionIds.has(question.id)
+  const hasSeenExactQuestion = seenQuestionIds.has(question.id) ||
+    avoidQuestionIds.has(question.id) ||
+    recentQuestionIds.has(question.id)
   const hasCorrectVariant = correctVariantIds.has(variantKey(question))
   let weight = 1
 
   if (!attempts) weight += 3
-  if (attempts && mastery < 0.65) weight += (1 - mastery) * 3
-  if (objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
-  if (objectiveProgress.needsDrill && objectiveProgress.lastResult !== 'incorrect') weight += missWeight * 2
-  if ((objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
+  if (attempts && mastery < 0.65 && boostDrill) weight += (1 - mastery) * 3
+  if (boostDrill && objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
+  if (boostDrill && objectiveProgress.needsDrill && objectiveProgress.lastResult !== 'incorrect') weight += missWeight * 2
+  if (boostDrill && (objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
   if (!hasSeenExactQuestion) weight += 3
-  if (hasSeenExactQuestion) weight *= 0.35
+  if (hasSeenExactQuestion) weight *= boostDrill ? 0.35 : 0.08
   if (hasCorrectVariant) weight *= correctWeight
+  if (attempts && !boostDrill) weight *= 0.4
   if (correctVariantIds.size >= minimumCorrectVariants) weight *= 0.25
   if (objectiveProgress.lastAttemptAt) {
     const daysSinceAttempt = (Date.now() - Date.parse(objectiveProgress.lastAttemptAt)) / 86400000
