@@ -1,13 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { questions, questionSets } from './questionSets.js'
+import { fullLengthExams, questions, questionSets } from './questionSets.js'
 import {
   DOMAIN_META,
+  EXAM_DOMAIN_COUNTS,
   PRACTICE_RESPONSE_COUNTS,
   answerMatches,
   createSessionQuestion,
   getCorrectPositionDistribution,
+  validateFullLengthExams,
   validateQuestionSets,
 } from '../quizLogic.js'
 
@@ -19,7 +21,9 @@ test('question bank imports the complete phase 1-4 handoff bank', () => {
   assert.equal(questions.length, qaReport.variant_question_count)
   assert.equal(new Set(questions.map(question => question.objectiveId)).size, qaReport.objective_count)
   assert.equal(questionSets.length, 10)
+  assert.equal(fullLengthExams.length, 6)
   assert.deepEqual(validateQuestionSets(questionSets, questions), [])
+  assert.deepEqual(validateFullLengthExams(fullLengthExams, questions), [])
 })
 
 test('questions preserve objective, variant, adaptive, and answer metadata', () => {
@@ -129,6 +133,25 @@ test('question bank includes single, choose-two, and choose-three items', () => 
     single: 750,
     chooseTwo: 250,
     chooseThree: 250,
+  })
+})
+
+test('full-length exam forms follow the exam guide distribution without exact question reuse', () => {
+  const allExamQuestionIds = fullLengthExams.flatMap(exam => exam.questionIds)
+  assert.equal(new Set(allExamQuestionIds).size, allExamQuestionIds.length)
+
+  fullLengthExams.forEach(exam => {
+    const examQuestions = exam.questionIds.map(id => questions.find(question => question.id === id))
+    const domainCounts = examQuestions.reduce((counts, question) => ({
+      ...counts,
+      [question.domain]: (counts[question.domain] || 0) + 1,
+    }), {})
+
+    assert.equal(examQuestions.length, 65)
+    assert.equal(new Set(examQuestions.map(question => question.objectiveId)).size, examQuestions.length)
+    assert.deepEqual(domainCounts, EXAM_DOMAIN_COUNTS)
+    assert.ok(examQuestions.some(question => question.correctOptionIds.length === 2))
+    assert.ok(examQuestions.some(question => question.correctOptionIds.length === 3))
   })
 })
 

@@ -35,6 +35,7 @@ No backend or environment variables are required. Progress is stored in the brow
 - 1,250 original scenario variants with single-answer, choose-two, and choose-three formats
 - 250 objectives with five adaptive variants each
 - 10 blueprint-weighted starter practice sets
+- 6 fixed full-length exams with no exact question reused across forms
 - Quick practice, domain practice, and 65-question / 130-minute exam mode
 - Explanations, question flags, navigation, results, and domain analytics
 - Searchable question bank with domain, service, objective, difficulty, missed, and mastered filters

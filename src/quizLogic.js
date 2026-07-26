@@ -8,6 +8,12 @@ export const DOMAIN_META = {
 export const EXAM_QUESTION_COUNT = 65
 export const EXAM_DURATION_SECONDS = 130 * 60
 export const MIN_CORRECT_VARIANTS_FOR_MASTERY = 3
+export const EXAM_DOMAIN_COUNTS = {
+  'Secure Architectures': 20,
+  'Resilient Architectures': 17,
+  'High-Performing Architectures': 16,
+  'Cost-Optimized Architectures': 12,
+}
 export const PRACTICE_DOMAIN_PATTERN = [
   'Secure Architectures',
   'Resilient Architectures',
@@ -537,6 +543,54 @@ export function validateQuestionSets(questionSets, questions) {
     Object.entries(PRACTICE_RESPONSE_COUNTS).forEach(([answerCount, expected]) => {
       if (responseCounts[answerCount] !== expected) {
         issues.push(`${set.name} should include ${expected} question(s) with ${answerCount} correct answer(s).`)
+      }
+    })
+  })
+
+  return issues
+}
+
+export function validateFullLengthExams(exams, questions) {
+  const questionById = new Map(questions.map(question => [question.id, question]))
+  const usedQuestionIds = new Set()
+  const issues = []
+
+  if (exams.length !== 6) {
+    issues.push(`Expected 6 full-length exams, found ${exams.length}.`)
+  }
+
+  exams.forEach(exam => {
+    if (exam.questionIds.length !== EXAM_QUESTION_COUNT) {
+      issues.push(`${exam.name} should contain ${EXAM_QUESTION_COUNT} questions.`)
+      return
+    }
+
+    const counts = Object.fromEntries(Object.keys(EXAM_DOMAIN_COUNTS).map(domain => [domain, 0]))
+    const objectiveIds = new Set()
+
+    exam.questionIds.forEach(id => {
+      const question = questionById.get(id)
+      if (!question) {
+        issues.push(`${exam.name} references missing question ${id}.`)
+        return
+      }
+
+      if (usedQuestionIds.has(id)) {
+        issues.push(`${exam.name} reuses question ${id} from another full-length exam.`)
+      }
+      usedQuestionIds.add(id)
+
+      const objectiveId = objectiveKey(question)
+      if (objectiveIds.has(objectiveId)) {
+        issues.push(`${exam.name} repeats objective ${objectiveId}.`)
+      }
+      objectiveIds.add(objectiveId)
+      counts[question.domain] += 1
+    })
+
+    Object.entries(EXAM_DOMAIN_COUNTS).forEach(([domain, expected]) => {
+      if (counts[domain] !== expected) {
+        issues.push(`${exam.name} should include ${expected} ${domain} questions.`)
       }
     })
   })

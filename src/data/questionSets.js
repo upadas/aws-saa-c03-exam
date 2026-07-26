@@ -1,5 +1,9 @@
 import { generatedQuestions } from '../../aws-saa-c03-phase1-4/phase4_question_bank_1250.js'
-import { PRACTICE_DOMAIN_PATTERN, PRACTICE_RESPONSE_PATTERN } from '../quizLogic.js'
+import {
+  EXAM_DOMAIN_COUNTS,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_PATTERN,
+} from '../quizLogic.js'
 
 const generatedDomainToAppDomain = {
   Security: 'Secure Architectures',
@@ -1075,6 +1079,75 @@ function practiceSetQuestions(setIndex) {
   })
 }
 
+function examDomainPattern() {
+  const remaining = { ...EXAM_DOMAIN_COUNTS }
+  const pattern = []
+  const domains = Object.keys(EXAM_DOMAIN_COUNTS)
+
+  while (pattern.length < Object.values(EXAM_DOMAIN_COUNTS).reduce((sum, count) => sum + count, 0)) {
+    domains.forEach(domain => {
+      if (remaining[domain] > 0) {
+        pattern.push(domain)
+        remaining[domain] -= 1
+      }
+    })
+  }
+
+  return pattern
+}
+
+function examVariantPreference(examIndex, slotIndex) {
+  const pattern = [4, 2, 3, 5, 1, 4, 3, 2, 5, 1]
+  return pattern[(examIndex * 3 + slotIndex) % pattern.length]
+}
+
+function fullLengthExamQuestionForSlot(domain, examIndex, slotIndex, usedQuestionIds, selected) {
+  const preferredVariant = examVariantPreference(examIndex, slotIndex)
+  const domainQuestions = questions.filter(question => (
+    question.domain === domain && !usedQuestionIds.has(question.id)
+  ))
+  const candidateGroups = [
+    domainQuestions.filter(question => (
+      question.variant === preferredVariant &&
+        !selected.objectives.has(question.objectiveId) &&
+        !selected.services.has(question.service)
+    )),
+    domainQuestions.filter(question => (
+      !selected.objectives.has(question.objectiveId) &&
+        !selected.services.has(question.service)
+    )),
+    domainQuestions.filter(question => (
+      question.variant === preferredVariant &&
+        !selected.objectives.has(question.objectiveId)
+    )),
+    domainQuestions.filter(question => !selected.objectives.has(question.objectiveId)),
+    domainQuestions,
+  ]
+  const pool = candidateGroups.find(group => group.length)
+  const ordered = rotated(pool || [], examIndex * 37 + slotIndex * 17 + preferredVariant * 13)
+  return ordered[0]
+}
+
+function fullLengthExamQuestions(examIndex, usedQuestionIds) {
+  const selected = {
+    ids: new Set(),
+    objectives: new Set(),
+    services: new Set(),
+  }
+
+  return examDomainPattern().map((domain, slotIndex) => {
+    const question = fullLengthExamQuestionForSlot(domain, examIndex, slotIndex, usedQuestionIds, selected)
+    if (!question) {
+      throw new Error(`Unable to build full-length exam ${examIndex + 1}; no question available for ${domain}.`)
+    }
+    selected.ids.add(question.id)
+    selected.objectives.add(question.objectiveId)
+    selected.services.add(question.service)
+    usedQuestionIds.add(question.id)
+    return question
+  })
+}
+
 export const questionSets = Array.from({ length: 10 }, (_, index) => {
   const setNumber = index + 1
   const questionIds = practiceSetQuestions(index).map(question => question.id)
@@ -1083,6 +1156,21 @@ export const questionSets = Array.from({ length: 10 }, (_, index) => {
     id: `set-${setNumber}`,
     name: `Practice Set ${setNumber}`,
     description: '10 scenario variants with single-answer, choose-two, and choose-three tradeoffs.',
+    questionIds,
+  }
+})
+
+const fullLengthExamUsedQuestionIds = new Set()
+
+export const fullLengthExams = Array.from({ length: 6 }, (_, index) => {
+  const examNumber = index + 1
+  const questionIds = fullLengthExamQuestions(index, fullLengthExamUsedQuestionIds)
+    .map(question => question.id)
+
+  return {
+    id: `exam-${examNumber}`,
+    name: `Full-Length Exam ${examNumber}`,
+    description: '65 questions - 20 security, 17 resilience, 16 performance, 12 cost.',
     questionIds,
   }
 })

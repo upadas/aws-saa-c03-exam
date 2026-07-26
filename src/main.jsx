@@ -5,11 +5,10 @@ import {
   ChevronRight, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search,
   ShieldCheck, Sparkles, Target, Timer, XCircle,
 } from 'lucide-react'
-import { questions, questionSets } from './data/questionSets'
+import { fullLengthExams, questions, questionSets } from './data/questionSets'
 import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
-  EXAM_QUESTION_COUNT,
   PRACTICE_DOMAIN_PATTERN,
   PRACTICE_RESPONSE_PATTERN,
   answerMatches,
@@ -163,6 +162,11 @@ function App() {
     startQuiz('set', list.length, 'All', list, { setId: set.id, title: set.name })
   }
 
+  const startExamForm = exam => {
+    const list = exam.questionIds.map(id => questionById.get(id)).filter(Boolean)
+    startQuiz('exam', list.length, 'All', list, { setId: exam.id, title: exam.name })
+  }
+
   const finishQuiz = () => {
     if (!session || session.result) return
     const result = buildSessionResult(session)
@@ -192,6 +196,7 @@ function App() {
         weakObjectives={weakObjectives}
         startQuiz={startQuiz}
         startQuestionSet={startQuestionSet}
+        startExamForm={startExamForm}
       />}
       {view === 'bank' && <QuestionBank
         query={bankQuery}
@@ -250,6 +255,7 @@ function Dashboard({
   weakObjectives,
   startQuiz,
   startQuestionSet,
+  startExamForm,
 }) {
   const latestPct = latest ? Math.round(latest.correct / latest.total * 100) : null
   const readiness = attempts ? Math.min(avg, 100) : Math.round(masteredObjectives / Math.max(objectiveCount, 1) * 100)
@@ -264,7 +270,7 @@ function Dashboard({
           <small>{attempts ? `${avg}% average across ${attempts} attempt${attempts > 1 ? 's' : ''}` : 'Complete a session to calibrate'}</small>
         </div>
         <div className="rail-list">
-          <button onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={16}/><span>Full exam</span><b>130m</b></button>
+          <button onClick={() => startExamForm(fullLengthExams[0])}><Timer size={16}/><span>Exam Form 1</span><b>130m</b></button>
           <button onClick={() => startQuiz('practice', 10)}><Target size={16}/><span>Quick practice</span><b>10q</b></button>
           <button onClick={() => startQuiz('missed', 10)}><ListChecks size={16}/><span>Missed concepts</span><b>10q</b></button>
           <button onClick={() => startQuiz('practice', 10, 'Resilient Architectures')}><ShieldCheck size={16}/><span>Resilience drill</span><b>10q</b></button>
@@ -280,7 +286,7 @@ function Dashboard({
             <p>{questions.length} original SAA-C03-style questions mapped to {objectiveCount} objectives, with adaptive variants and a 65-question exam simulation.</p>
             <div className="hero-actions">
               <button className="primary" onClick={() => startQuestionSet(questionSets[0])}><Target size={19}/> Start Set 1 <ArrowRight size={18}/></button>
-              <button className="secondary" onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={19}/> 65-question exam</button>
+              <button className="secondary" onClick={() => startExamForm(fullLengthExams[0])}><Timer size={19}/> Exam Form 1</button>
             </div>
           </div>
           <div className="score-tile">
@@ -307,6 +313,16 @@ function Dashboard({
               <span>{String(index + 1).padStart(2, '0')}</span>
               <div><h3>{set.name}</h3><p>{set.description}</p></div>
               <button onClick={() => startQuestionSet(set)}>Start set <ChevronRight size={16}/></button>
+            </article>
+          )}
+        </section>
+
+        <section className="set-grid">
+          {fullLengthExams.map((exam, index) =>
+            <article className="set-card" key={exam.id}>
+              <span>E{index + 1}</span>
+              <div><h3>{exam.name}</h3><p>{exam.description}</p></div>
+              <button onClick={() => startExamForm(exam)}>Start exam <ChevronRight size={16}/></button>
             </article>
           )}
         </section>
