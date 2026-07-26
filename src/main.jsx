@@ -5,7 +5,7 @@ import {
   ChevronRight, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search,
   ShieldCheck, Sparkles, Target, Timer, XCircle,
 } from 'lucide-react'
-import { fullLengthExams, questions, questionSets } from './data/questionSets'
+import { loadQuestionBank } from './data/questionBankSource'
 import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
@@ -88,6 +88,8 @@ function loadSaved() {
 
 function App() {
   const [initialSaved] = useState(loadSaved)
+  const [bank, setBank] = useState(null)
+  const [bankStatus, setBankStatus] = useState('loading')
   const [view, setView] = useState(() => (
     initialSaved.activeSession?.result ? 'result' : initialSaved.activeSession ? 'quiz' : 'dashboard'
   ))
@@ -99,13 +101,30 @@ function App() {
   const [progressFilter, setProgressFilter] = useState('All')
   const [session, setSession] = useState(() => initialSaved.activeSession)
   const [saved, setSaved] = useState(() => initialSaved)
+  const questions = bank?.questions || []
+  const questionSets = bank?.questionSets || []
+  const fullLengthExams = bank?.fullLengthExams || []
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ ...saved, activeSession: session }))
   }, [saved, session])
 
-  const questionById = useMemo(() => new Map(questions.map(question => [question.id, question])), [])
-  const objectiveCount = useMemo(() => new Set(questions.map(question => question.objectiveId)).size, [])
+  useEffect(() => {
+    let cancelled = false
+
+    loadQuestionBank().then(loadedBank => {
+      if (cancelled) return
+      setBank(loadedBank)
+      setBankStatus(loadedBank.source)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const questionById = useMemo(() => new Map(questions.map(question => [question.id, question])), [questions])
+  const objectiveCount = useMemo(() => new Set(questions.map(question => question.objectiveId)).size, [questions])
   const mastered = new Set(saved.mastered)
   const objectiveProgress = saved.objectiveProgress || {}
   const progressList = Object.values(objectiveProgress)
@@ -183,10 +202,20 @@ function App() {
     setView('result')
   }
 
+  if (!bank) {
+    return <div className="app-shell">
+      <Header view={view} setView={setView} questionCount={0} bankStatus={bankStatus} />
+      <main><LoadingBank /></main>
+    </div>
+  }
+
   return <div className="app-shell">
-    <Header view={view} setView={setView} questionCount={questions.length} />
+    <Header view={view} setView={setView} questionCount={questions.length} bankStatus={bankStatus} />
     <main>
       {view === 'dashboard' && <Dashboard
+        questions={questions}
+        questionSets={questionSets}
+        fullLengthExams={fullLengthExams}
         avg={avg}
         latest={latest}
         attempts={saved.attempts.length}
@@ -199,6 +228,7 @@ function App() {
         startExamForm={startExamForm}
       />}
       {view === 'bank' && <QuestionBank
+        questions={questions}
         query={bankQuery}
         setQuery={setBankQuery}
         domain={domainFilter}
@@ -231,7 +261,9 @@ function modeTitle(mode, domain) {
   return 'Quick adaptive practice'
 }
 
-function Header({ view, setView, questionCount }) {
+function Header({ view, setView, questionCount, bankStatus }) {
+  const sourceLabel = bankStatus === 'supabase' ? 'Supabase' : bankStatus === 'local' ? 'Local bank' : 'Loading'
+
   return <header className="topbar">
     <button className="brand" onClick={() => setView('dashboard')}>
       <span className="brand-mark"><Cloud size={23}/></span>
@@ -241,11 +273,24 @@ function Header({ view, setView, questionCount }) {
       <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={17}/> Dashboard</button>
       <button className={view === 'bank' ? 'active' : ''} onClick={() => setView('bank')}><BookOpen size={17}/> Question bank</button>
     </nav>
-    <div className="exam-pill"><span></span> {questionCount} original questions</div>
+    <div className="exam-pill"><span></span> {questionCount || '...'} original questions / {sourceLabel}</div>
   </header>
 }
 
+function LoadingBank() {
+  return <div className="page loading-page">
+    <div className="loading-panel">
+      <span className="loading-mark"><Cloud size={28}/></span>
+      <strong>Loading question bank</strong>
+      <p>Preparing the SAA-C03 practice cockpit.</p>
+    </div>
+  </div>
+}
+
 function Dashboard({
+  questions,
+  questionSets,
+  fullLengthExams,
   avg,
   latest,
   attempts,
@@ -352,6 +397,7 @@ function Dashboard({
 }
 
 function QuestionBank({
+  questions,
   query,
   setQuery,
   domain,
@@ -372,7 +418,7 @@ function QuestionBank({
   const [expandedIds, setExpandedIds] = useState([])
   const serviceOptions = useMemo(() => (
     [...new Set(questions.flatMap(question => question.services || []))].sort()
-  ), [])
+  ), [questions])
   const objectiveOptions = useMemo(() => (
     [...questions.reduce((map, question) => {
       if (!map.has(question.objectiveId)) {
@@ -386,7 +432,7 @@ function QuestionBank({
       return map
     }, new Map()).values()]
       .sort((a, b) => a.objectiveId.localeCompare(b.objectiveId))
-  ), [])
+  ), [questions])
   const filtered = questions.filter(question => {
     const state = objectiveProgress[question.objectiveId] || {}
     const isMastered = mastered.has(question.id) || (state.mastery || 0) >= 0.85
@@ -448,7 +494,7 @@ function QuestionBank({
         return <article className="bank-item" key={question.id}>
           <div className="q-index">{String(question.id).padStart(2, '0')}</div>
           <div className="bank-main">
-            <div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
+            <div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.type === 'multiple' ? `Choose ${question.answers.length}` : 'Single answer'}</span></div>
             <button className="bank-question" onClick={() => toggleExpanded(question.id)}>{question.question}</button>
             <div className="objective-name">{question.objectiveName}</div>
             <div className="service-list">{question.services.map(service => <span key={service}>{service}</span>)}</div>

@@ -60,6 +60,28 @@ button{cursor:pointer}
 .exam-pill{color:var(--soft);display:flex;gap:8px;align-items:center}
 .exam-pill span{width:7px;height:7px;border-radius:50%;background:var(--teal)}
 .page{max-width:1200px;margin:auto;padding:40px 32px 80px}
+.loading-page{min-height:calc(100vh - 72px);display:grid;place-items:center}
+.loading-panel{
+  width:min(360px,100%);
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--surface);
+  padding:28px;
+  text-align:center;
+}
+.loading-mark{
+  display:inline-grid;
+  place-items:center;
+  width:54px;
+  height:54px;
+  border-radius:12px;
+  border:1px solid var(--warm-line);
+  background:var(--warm);
+  color:var(--amber);
+  margin-bottom:14px;
+}
+.loading-panel strong{display:block;font-size:18px}
+.loading-panel p{margin:8px 0 0;color:var(--muted)}
 .primary,.secondary,.check-btn{
   border-radius:8px;
   padding:13px 20px;

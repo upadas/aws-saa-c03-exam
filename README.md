@@ -27,7 +27,25 @@ npm run preview
 4. Build command: `npm run build`
 5. Output directory: `dist`
 
-No backend or environment variables are required. Progress is stored in the browser's localStorage.
+No backend or environment variables are required. Progress is stored in the browser's localStorage. If `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured, the app loads the question bank from Supabase and falls back to the local bank if the API is unavailable.
+
+## Postgres / Supabase question bank
+
+The generated question bank can also be loaded into Supabase or any PostgreSQL database:
+
+```bash
+npm run db:check
+npm run db:export
+```
+
+Apply `db/schema.sql` first, then load `db/generated/question-bank-seed.sql`. The schema stores domains, objectives, questions, options, practice sets, and six full-length exam forms.
+
+To use Supabase as the runtime source, copy `.env.example` to `.env.local` and set:
+
+```bash
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
 
 ## Included
 
