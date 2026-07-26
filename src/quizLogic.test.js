@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_COUNTS,
+  PRACTICE_RESPONSE_PATTERN,
   answerMatches,
   adaptiveQuestionWeight,
   buildQuestionReview,
@@ -15,12 +18,14 @@ import {
   validateQuestionSets,
 } from './quizLogic.js'
 
-const makeQuestion = (id, domain) => ({
+const makeQuestion = (id, domain, answerCount = 1) => ({
   id,
   domain,
   objectiveId: `${domain}-${id}`,
   objectiveName: `${domain} objective ${id}`,
-  answers: [0],
+  service: `${domain} service ${id}`,
+  services: [`${domain} service ${id}`],
+  answers: Array.from({ length: answerCount }, (_, index) => index),
   options: ['Correct option', 'Plausible distractor', 'Another distractor', 'Tradeoff distractor'],
 })
 
@@ -114,6 +119,46 @@ test('adaptive selection boosts missed objectives and avoids duplicate questions
   )
 })
 
+test('adaptive practice can enforce a mixed single and multiple response pattern', () => {
+  const questions = Object.keys(DOMAIN_META).flatMap((domain, domainIndex) =>
+    Array.from({ length: 12 }, (_, index) =>
+      makeQuestion(
+        domainIndex * 100 + index,
+        domain,
+        PRACTICE_RESPONSE_PATTERN[index % PRACTICE_RESPONSE_PATTERN.length],
+      ),
+    ),
+  )
+
+  const sample = selectAdaptiveQuestions(
+    questions,
+    {},
+    PRACTICE_RESPONSE_PATTERN.length,
+    { domainPattern: PRACTICE_DOMAIN_PATTERN, responsePattern: PRACTICE_RESPONSE_PATTERN },
+    () => 0.31,
+  )
+  const responseCounts = sample.reduce((counts, question) => ({
+    ...counts,
+    [question.answers.length]: (counts[question.answers.length] || 0) + 1,
+  }), {})
+  const domainCounts = sample.reduce((counts, question) => ({
+    ...counts,
+    [question.domain]: (counts[question.domain] || 0) + 1,
+  }), {})
+  const serviceCount = new Set(sample.map(question => question.service || question.services?.[0])).size
+
+  assert.equal(sample.length, PRACTICE_RESPONSE_PATTERN.length)
+  assert.equal(new Set(sample.map(question => question.objectiveId)).size, sample.length)
+  assert.deepEqual(responseCounts, PRACTICE_RESPONSE_COUNTS)
+  assert.deepEqual(domainCounts, {
+    'Secure Architectures': 3,
+    'Resilient Architectures': 3,
+    'High-Performing Architectures': 2,
+    'Cost-Optimized Architectures': 2,
+  })
+  assert.equal(serviceCount, sample.length)
+})
+
 test('adaptive drill mode can intentionally repeat an objective', () => {
   const questions = [
     { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
@@ -124,6 +169,27 @@ test('adaptive drill mode can intentionally repeat an objective', () => {
 
   assert.equal(sample.length, 2)
   assert.deepEqual(sample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+})
+
+test('adaptive drill mode avoids back-to-back repeated objectives when alternatives exist', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
+    { ...makeQuestion(4, 'Secure Architectures'), objectiveId: 'kms-policy' },
+  ]
+  const sample = selectAdaptiveQuestions(
+    questions,
+    {},
+    4,
+    { objectiveIds: ['s3-endpoint', 'kms-policy'], allowRepeatedObjectives: true },
+    () => 0,
+  )
+
+  assert.equal(sample.length, 4)
+  sample.slice(1).forEach((question, index) => {
+    assert.notEqual(question.objectiveId, sample[index].objectiveId)
+  })
 })
 
 test('updateObjectiveProgress requires three correct variants for mastery', () => {
@@ -223,12 +289,21 @@ test('sampleWeighted does not repeat objectives when variants are available', ()
 })
 
 test('validateQuestionSets requires 10 blueprint-aligned sets of 10 questions', () => {
-  const questions = [
-    ...Array.from({ length: 3 }, (_, index) => makeQuestion(index + 1, 'Secure Architectures')),
-    ...Array.from({ length: 3 }, (_, index) => makeQuestion(index + 4, 'Resilient Architectures')),
-    ...Array.from({ length: 2 }, (_, index) => makeQuestion(index + 7, 'High-Performing Architectures')),
-    ...Array.from({ length: 2 }, (_, index) => makeQuestion(index + 9, 'Cost-Optimized Architectures')),
+  const domains = [
+    'Secure Architectures',
+    'Resilient Architectures',
+    'High-Performing Architectures',
+    'Cost-Optimized Architectures',
+    'Secure Architectures',
+    'Resilient Architectures',
+    'High-Performing Architectures',
+    'Cost-Optimized Architectures',
+    'Secure Architectures',
+    'Resilient Architectures',
   ]
+  const questions = domains.map((domain, index) =>
+    makeQuestion(index + 1, domain, PRACTICE_RESPONSE_PATTERN[index]),
+  )
   const questionSets = Array.from({ length: 10 }, (_, index) => ({
     id: `set-${index + 1}`,
     name: `Set ${index + 1}`,

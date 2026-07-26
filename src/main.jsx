@@ -10,6 +10,8 @@ import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
   EXAM_QUESTION_COUNT,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_PATTERN,
   answerMatches,
   buildQuestionReview,
   buildSessionResult,
@@ -22,11 +24,14 @@ import {
 } from './quizLogic'
 import './styles.css'
 
+const storageSchemaVersion = 3
+const questionBankVersion = 'saa-c03-1250-compound-practice-v2'
 const storageKey = 'saa-c03-progress-v2'
 const legacyStorageKey = 'saa-c03-progress-v1'
 
 const defaultSaved = {
-  schemaVersion: 2,
+  schemaVersion: storageSchemaVersion,
+  questionBankVersion,
   attempts: [],
   mastered: [],
   objectiveProgress: {},
@@ -34,16 +39,39 @@ const defaultSaved = {
   activeSession: null,
 }
 
+function allowsRepeatedObjectives(session) {
+  return session?.mode === 'missed' || session?.mode === 'objective'
+}
+
+function hasRepeatedObjectives(session) {
+  if (!session?.questions?.length || allowsRepeatedObjectives(session)) return false
+  const seen = new Set()
+
+  return session.questions.some(question => {
+    const objectiveId = question.objectiveId || question.id
+    if (seen.has(objectiveId)) return true
+    seen.add(objectiveId)
+    return false
+  })
+}
+
 function normalizeSaved(value) {
+  const isCompatible = value?.schemaVersion === storageSchemaVersion &&
+    value?.questionBankVersion === questionBankVersion
+  const activeSession = isCompatible && !hasRepeatedObjectives(value?.activeSession)
+    ? value?.activeSession || null
+    : null
+
   return {
     ...defaultSaved,
     ...(value || {}),
-    schemaVersion: 2,
+    schemaVersion: storageSchemaVersion,
+    questionBankVersion,
     attempts: Array.isArray(value?.attempts) ? value.attempts : [],
     mastered: Array.isArray(value?.mastered) ? value.mastered : [],
     objectiveProgress: value?.objectiveProgress || {},
     completedSessions: Array.isArray(value?.completedSessions) ? value.completedSessions : [],
-    activeSession: value?.activeSession || null,
+    activeSession,
   }
 }
 
@@ -102,7 +130,11 @@ function App() {
     } else if (!list && mode === 'objective') {
       list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [], allowRepeatedObjectives: true })
     } else if (!list) {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { domain })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        domain,
+        domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
+        responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+      })
     }
 
     const sessionQuestions = createSessionQuestions(list)
@@ -355,7 +387,11 @@ function QuestionBank({
       haystack.includes(query.toLowerCase())
   })
   const startFilteredPractice = () => {
-    const list = selectAdaptiveQuestions(filtered, objectiveProgress, Math.min(10, filtered.length))
+    const count = Math.min(10, filtered.length)
+    const list = selectAdaptiveQuestions(filtered, objectiveProgress, count, {
+      domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
+      responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+    })
     if (list.length) startQuiz('practice', list.length, domain, list, { title: 'Filtered adaptive practice' })
   }
   const toggleMastered = id => setSaved(prev => ({

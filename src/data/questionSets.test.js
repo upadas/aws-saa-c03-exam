@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import { questions, questionSets } from './questionSets.js'
 import {
   DOMAIN_META,
+  PRACTICE_RESPONSE_COUNTS,
   answerMatches,
   createSessionQuestion,
   getCorrectPositionDistribution,
@@ -96,6 +97,20 @@ test('normal practice sets do not repeat the same objective', () => {
   questionSets.forEach(set => {
     const setQuestions = set.questionIds.map(id => questions.find(question => question.id === id))
     assert.equal(new Set(setQuestions.map(question => question.objectiveId)).size, setQuestions.length)
+  })
+})
+
+test('normal practice sets mix single, choose-two, and choose-three questions without clustering services', () => {
+  questionSets.forEach(set => {
+    const setQuestions = set.questionIds.map(id => questions.find(question => question.id === id))
+    const responseCounts = setQuestions.reduce((counts, question) => ({
+      ...counts,
+      [question.correctOptionIds.length]: (counts[question.correctOptionIds.length] || 0) + 1,
+    }), {})
+    const services = new Set(setQuestions.map(question => question.service))
+
+    assert.deepEqual(responseCounts, PRACTICE_RESPONSE_COUNTS)
+    assert.equal(services.size, setQuestions.length, `${set.name} should spread services instead of repeating the same topic cluster`)
   })
 })
 

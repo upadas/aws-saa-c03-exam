@@ -1,17 +1,11 @@
 import { generatedQuestions } from '../../aws-saa-c03-phase1-4/phase4_question_bank_1250.js'
+import { PRACTICE_DOMAIN_PATTERN, PRACTICE_RESPONSE_PATTERN } from '../quizLogic.js'
 
 const generatedDomainToAppDomain = {
   Security: 'Secure Architectures',
   Resilience: 'Resilient Architectures',
   Performance: 'High-Performing Architectures',
   Cost: 'Cost-Optimized Architectures',
-}
-
-const domainSetCounts = {
-  'Secure Architectures': 3,
-  'Resilient Architectures': 3,
-  'High-Performing Architectures': 2,
-  'Cost-Optimized Architectures': 2,
 }
 
 const masteryCorrectVariantsRequired = 3
@@ -1036,43 +1030,59 @@ function normalizeQuestion(item) {
 
 export const questions = generatedQuestions.map(normalizeQuestion)
 
-const objectiveGroupsByDomain = Object.fromEntries(
-  Object.keys(domainSetCounts).map(domain => [
-    domain,
-    [...questions
-      .filter(question => question.domain === domain)
-      .reduce((groups, question) => {
-        const group = groups.get(question.objectiveId) || []
-        group.push(question)
-        groups.set(question.objectiveId, group)
-        return groups
-      }, new Map())
-      .values()]
-      .map(group => group.sort((a, b) => a.variant - b.variant)),
-  ]),
-)
+function rotated(items, offset) {
+  if (!items.length) return items
+  const safeOffset = offset % items.length
+  return [...items.slice(safeOffset), ...items.slice(0, safeOffset)]
+}
 
-function practiceSetQuestionsForDomain(domain, count, setIndex) {
-  const groups = objectiveGroupsByDomain[domain]
-  const offset = setIndex * count
+function responseCountFor(question) {
+  return question.correctOptionIds.length
+}
 
-  return Array.from({ length: count }, (_, slot) => {
-    const group = groups[(offset + slot) % groups.length]
-    return group[(setIndex + slot) % group.length]
+function practiceSetQuestionForSlot(domain, answerCount, setIndex, slotIndex, selected) {
+  const domainQuestions = questions.filter(question => (
+    question.domain === domain && responseCountFor(question) === answerCount
+  ))
+  const available = domainQuestions.filter(question => (
+    !selected.objectives.has(question.objectiveId) && !selected.ids.has(question.id)
+  ))
+  const serviceDiverse = available.filter(question => !selected.services.has(question.service))
+  const pool = serviceDiverse.length ? serviceDiverse : available.length ? available : domainQuestions
+  const ordered = rotated(pool, setIndex * 19 + slotIndex * 11 + answerCount * 7)
+  return ordered[0]
+}
+
+function practiceSetQuestions(setIndex) {
+  const selected = {
+    ids: new Set(),
+    objectives: new Set(),
+    services: new Set(),
+  }
+
+  return PRACTICE_DOMAIN_PATTERN.map((domain, slotIndex) => {
+    const question = practiceSetQuestionForSlot(
+      domain,
+      PRACTICE_RESPONSE_PATTERN[slotIndex],
+      setIndex,
+      slotIndex,
+      selected,
+    )
+    selected.ids.add(question.id)
+    selected.objectives.add(question.objectiveId)
+    selected.services.add(question.service)
+    return question
   })
 }
 
 export const questionSets = Array.from({ length: 10 }, (_, index) => {
   const setNumber = index + 1
-  const questionIds = Object.entries(domainSetCounts).flatMap(([domain, count]) => (
-    practiceSetQuestionsForDomain(domain, count, index)
-      .map(question => question.id)
-  ))
+  const questionIds = practiceSetQuestions(index).map(question => question.id)
 
   return {
     id: `set-${setNumber}`,
     name: `Practice Set ${setNumber}`,
-    description: '10 original scenario variants weighted close to the SAA-C03 blueprint.',
+    description: '10 scenario variants with single-answer, choose-two, and choose-three tradeoffs.',
     questionIds,
   }
 })

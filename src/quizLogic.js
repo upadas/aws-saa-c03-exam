@@ -8,6 +8,23 @@ export const DOMAIN_META = {
 export const EXAM_QUESTION_COUNT = 65
 export const EXAM_DURATION_SECONDS = 130 * 60
 export const MIN_CORRECT_VARIANTS_FOR_MASTERY = 3
+export const PRACTICE_DOMAIN_PATTERN = [
+  'Secure Architectures',
+  'Resilient Architectures',
+  'High-Performing Architectures',
+  'Cost-Optimized Architectures',
+  'Secure Architectures',
+  'Resilient Architectures',
+  'High-Performing Architectures',
+  'Cost-Optimized Architectures',
+  'Secure Architectures',
+  'Resilient Architectures',
+]
+export const PRACTICE_RESPONSE_PATTERN = [1, 2, 1, 3, 1, 2, 1, 3, 2, 1]
+export const PRACTICE_RESPONSE_COUNTS = PRACTICE_RESPONSE_PATTERN.reduce((counts, answerCount) => ({
+  ...counts,
+  [answerCount]: (counts[answerCount] || 0) + 1,
+}), {})
 
 const SET_DOMAIN_COUNTS = {
   'Secure Architectures': 3,
@@ -49,6 +66,10 @@ function variantKey(question) {
 
 function objectiveKey(question) {
   return question.objectiveId || `question-${question.id}`
+}
+
+function responseCount(question) {
+  return correctOptionIds(question).length
 }
 
 export function getOptionRecords(question) {
@@ -175,8 +196,66 @@ export function sampleWeighted(questions, count) {
   return shuffle(chosen).slice(0, count)
 }
 
+function pickWeightedQuestion(candidates, progress, random) {
+  const weighted = candidates.map(question => ({
+    question,
+    weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
+  }))
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
+  let cursor = random() * totalWeight
+
+  for (let index = 0; index < weighted.length; index += 1) {
+    cursor -= weighted[index].weight
+    if (cursor <= 0) return weighted[index].question
+  }
+
+  return weighted[0]?.question
+}
+
+function interleaveByResponsePattern(selected, pattern) {
+  if (!pattern?.length) return selected
+
+  const groups = selected.reduce((map, question) => {
+    const key = responseCount(question)
+    const group = map.get(key) || []
+    group.push(question)
+    map.set(key, group)
+    return map
+  }, new Map())
+  const ordered = []
+
+  pattern.forEach(answerCount => {
+    const group = groups.get(answerCount)
+    const next = group?.shift()
+    if (next) ordered.push(next)
+  })
+
+  groups.forEach(group => ordered.push(...group))
+  return ordered
+}
+
+function avoidAdjacentObjectiveRepeats(selected) {
+  const remaining = [...selected]
+  const ordered = []
+
+  while (remaining.length) {
+    const previousObjective = ordered.length ? objectiveKey(ordered[ordered.length - 1]) : null
+    const nextIndex = remaining.findIndex(question => objectiveKey(question) !== previousObjective)
+    const safeIndex = nextIndex === -1 ? 0 : nextIndex
+    ordered.push(remaining.splice(safeIndex, 1)[0])
+  }
+
+  return ordered
+}
+
 export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
   const allowRepeatedObjectives = Boolean(filters.allowRepeatedObjectives)
+  const domainPattern = filters.domainPattern || null
+  const responsePattern = filters.responsePattern || null
+  const responseTargets = responsePattern?.reduce((counts, answerCount) => ({
+    ...counts,
+    [answerCount]: (counts[answerCount] || 0) + 1,
+  }), {})
   const eligible = questions.filter(question => {
     const domainMatch = !filters.domain || filters.domain === 'All' || question.domain === filters.domain
     const serviceMatch = !filters.service || filters.service === 'All' || question.services?.includes(filters.service) || question.service === filters.service
@@ -189,34 +268,59 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
   const remaining = [...eligible]
   const selected = []
   const selectedObjectives = new Set()
+  const selectedServices = new Set()
+  const takeQuestion = question => {
+    selected.push(question)
+    selectedObjectives.add(objectiveKey(question))
+    selectedServices.add(question.service || question.services?.[0])
+    remaining.splice(remaining.indexOf(question), 1)
+  }
+  const availableCandidates = predicate => remaining.filter(question => (
+    predicate(question) && !selectedObjectives.has(objectiveKey(question))
+  ))
+  const preferServiceDiversity = candidates => {
+    const diverse = candidates.filter(question => !selectedServices.has(question.service || question.services?.[0]))
+    return diverse.length ? diverse : candidates
+  }
+
+  if (
+    domainPattern?.length === count &&
+    responsePattern?.length === count &&
+    !allowRepeatedObjectives
+  ) {
+    domainPattern.forEach((domain, index) => {
+      const answerCount = responsePattern[index]
+      const candidates = [
+        () => availableCandidates(question => question.domain === domain && responseCount(question) === answerCount),
+        () => availableCandidates(question => question.domain === domain),
+        () => availableCandidates(question => responseCount(question) === answerCount),
+        () => availableCandidates(() => true),
+      ].map(factory => preferServiceDiversity(factory())).find(pool => pool.length)
+
+      if (candidates?.length) takeQuestion(pickWeightedQuestion(candidates, progress, random))
+    })
+  }
+
+  if (responseTargets && !domainPattern && !allowRepeatedObjectives) {
+    Object.entries(responseTargets).forEach(([answerCount, target]) => {
+      while (selected.filter(question => responseCount(question) === Number(answerCount)).length < target) {
+        const candidates = preferServiceDiversity(availableCandidates(question => (
+          responseCount(question) === Number(answerCount)
+        )))
+        if (!candidates.length) break
+        takeQuestion(pickWeightedQuestion(candidates, progress, random))
+      }
+    })
+  }
 
   while (selected.length < count && remaining.length) {
     const candidates = allowRepeatedObjectives
       ? remaining
-      : remaining.filter(question => !selectedObjectives.has(objectiveKey(question)))
+      : preferServiceDiversity(remaining.filter(question => !selectedObjectives.has(objectiveKey(question))))
 
     if (!candidates.length) break
 
-    const weighted = candidates.map(question => ({
-      question,
-      weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
-    }))
-    const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
-    let cursor = random() * totalWeight
-    let chosenIndex = 0
-
-    for (let index = 0; index < weighted.length; index += 1) {
-      cursor -= weighted[index].weight
-      if (cursor <= 0) {
-        chosenIndex = index
-        break
-      }
-    }
-
-    const chosenQuestion = weighted[chosenIndex].question
-    selected.push(chosenQuestion)
-    selectedObjectives.add(objectiveKey(chosenQuestion))
-    remaining.splice(remaining.indexOf(chosenQuestion), 1)
+    takeQuestion(pickWeightedQuestion(candidates, progress, random))
   }
 
   if (selected.length < count && filters.missedOnly) {
@@ -232,7 +336,9 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
     )
   }
 
-  return selected
+  return avoidAdjacentObjectiveRepeats(
+    interleaveByResponsePattern(selected, responsePattern),
+  ).slice(0, count)
 }
 
 export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
@@ -404,6 +510,7 @@ export function validateQuestionSets(questionSets, questions) {
     }
 
     const counts = Object.fromEntries(Object.keys(DOMAIN_META).map(domain => [domain, 0]))
+    const responseCounts = Object.fromEntries(Object.keys(PRACTICE_RESPONSE_COUNTS).map(answerCount => [answerCount, 0]))
     const objectiveIds = new Set()
     set.questionIds.forEach(id => {
       const question = questionById.get(id)
@@ -412,16 +519,24 @@ export function validateQuestionSets(questionSets, questions) {
         return
       }
       const objectiveId = objectiveKey(question)
+      const answers = String(responseCount(question))
       if (objectiveIds.has(objectiveId)) {
         issues.push(`${set.name} repeats objective ${objectiveId}.`)
       }
       objectiveIds.add(objectiveId)
       counts[question.domain] += 1
+      responseCounts[answers] = (responseCounts[answers] || 0) + 1
     })
 
     Object.entries(SET_DOMAIN_COUNTS).forEach(([domain, expected]) => {
       if (counts[domain] !== expected) {
         issues.push(`${set.name} should include ${expected} ${domain} questions.`)
+      }
+    })
+
+    Object.entries(PRACTICE_RESPONSE_COUNTS).forEach(([answerCount, expected]) => {
+      if (responseCounts[answerCount] !== expected) {
+        issues.push(`${set.name} should include ${expected} question(s) with ${answerCount} correct answer(s).`)
       }
     })
   })
