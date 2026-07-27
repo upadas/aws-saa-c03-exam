@@ -1,4 +1,5 @@
 import { generatedQuestions } from '../../aws-saa-c03-phase1-4/phase4_question_bank_1250.js'
+import { proPracticeQuestions } from './proPracticeBank.js'
 import {
   EXAM_DOMAIN_COUNTS,
   PRACTICE_DOMAIN_PATTERN,
@@ -1032,7 +1033,9 @@ function normalizeQuestion(item) {
   }
 }
 
-export const questions = generatedQuestions.map(normalizeQuestion)
+export const generatedBankQuestions = generatedQuestions.map(normalizeQuestion)
+
+export const questions = [...generatedBankQuestions, ...proPracticeQuestions]
 
 function rotated(items, offset) {
   if (!items.length) return items
@@ -1040,41 +1043,21 @@ function rotated(items, offset) {
   return [...items.slice(safeOffset), ...items.slice(0, safeOffset)]
 }
 
-function responseCountFor(question) {
-  return question.correctOptionIds.length
-}
-
-function practiceSetQuestionForSlot(domain, answerCount, setIndex, slotIndex, selected) {
-  const domainQuestions = questions.filter(question => (
-    question.domain === domain && responseCountFor(question) === answerCount
-  ))
-  const available = domainQuestions.filter(question => (
-    !selected.objectives.has(question.objectiveId) && !selected.ids.has(question.id)
-  ))
-  const serviceDiverse = available.filter(question => !selected.services.has(question.service))
-  const pool = serviceDiverse.length ? serviceDiverse : available.length ? available : domainQuestions
-  const ordered = rotated(pool, setIndex * 19 + slotIndex * 11 + answerCount * 7)
-  return ordered[0]
-}
-
 function practiceSetQuestions(setIndex) {
-  const selected = {
-    ids: new Set(),
-    objectives: new Set(),
-    services: new Set(),
-  }
+  const setNumber = setIndex + 1
+  const setQuestions = proPracticeQuestions.filter(question => question.practiceSet === setNumber)
+  const intents = new Set()
 
   return PRACTICE_DOMAIN_PATTERN.map((domain, slotIndex) => {
-    const question = practiceSetQuestionForSlot(
-      domain,
-      PRACTICE_RESPONSE_PATTERN[slotIndex],
-      setIndex,
-      slotIndex,
-      selected,
-    )
-    selected.ids.add(question.id)
-    selected.objectives.add(question.objectiveId)
-    selected.services.add(question.service)
+    const question = setQuestions[slotIndex]
+    if (!question || question.domain !== domain ||
+        question.correctOptionIds.length !== PRACTICE_RESPONSE_PATTERN[slotIndex]) {
+      throw new Error(`Practice set ${setNumber} slot ${slotIndex + 1} does not match the blueprint pattern.`)
+    }
+    if (intents.has(question.intentGroup)) {
+      throw new Error(`Practice set ${setNumber} repeats intent ${question.intentGroup}.`)
+    }
+    intents.add(question.intentGroup)
     return question
   })
 }
@@ -1103,7 +1086,7 @@ function examVariantPreference(examIndex, slotIndex) {
 
 function fullLengthExamQuestionForSlot(domain, examIndex, slotIndex, usedQuestionIds, selected) {
   const preferredVariant = examVariantPreference(examIndex, slotIndex)
-  const domainQuestions = questions.filter(question => (
+  const domainQuestions = generatedBankQuestions.filter(question => (
     question.domain === domain && !usedQuestionIds.has(question.id)
   ))
   const candidateGroups = [
@@ -1155,7 +1138,7 @@ export const questionSets = Array.from({ length: 10 }, (_, index) => {
   return {
     id: `set-${setNumber}`,
     name: `Practice Set ${setNumber}`,
-    description: '10 scenario variants with single-answer, choose-two, and choose-three tradeoffs.',
+    description: 'Senior-level scenarios with single-answer, choose-two, and choose-three tradeoffs. No repeated intents within the set.',
     questionIds,
   }
 })

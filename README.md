@@ -1,6 +1,6 @@
 # Cloud Architect Lab — AWS SAA-C03 Quiz
 
-A local-first, Vercel-ready React/Vite practice application with 1,250 original scenario variants across 250 SAA-C03 objectives.
+A local-first, Vercel-ready React/Vite practice application with 1,350 original questions: 1,250 generated scenario variants across 250 SAA-C03 objectives plus 100 hand-authored senior practice scenarios.
 
 ## Run locally
 
@@ -50,9 +50,9 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 ## Included
 
 - Dashboard and official-domain weighting display
-- 1,250 original scenario variants with single-answer, choose-two, and choose-three formats
+- 1,350 original questions with single-answer, choose-two, and choose-three formats
 - 250 objectives with five adaptive variants each
-- 10 blueprint-weighted starter practice sets
+- 10 blueprint-weighted practice sets of hand-authored senior-level questions (no repeated intent within a set)
 - 6 fixed full-length exams with no exact question reused across forms
 - Quick practice, domain practice, and 65-question / 130-minute exam mode
 - Explanations, question flags, navigation, results, and domain analytics

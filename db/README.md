@@ -6,7 +6,7 @@ The app currently imports the generated question bank locally, but the same cont
 
 - `saa_domains`: SAA-C03 domains and guide distribution counts.
 - `saa_objectives`: the 250 objective/intent records.
-- `saa_questions`: the 1,250 scenario variants.
+- `saa_questions`: the 1,250 generated scenario variants plus 100 senior hand-authored practice scenarios.
 - `saa_question_options`: answer choices and per-option explanations.
 - `saa_practice_sets`: the 10 fixed 10-question practice sets.
 - `saa_exam_forms`: the 6 fixed 65-question exam forms.
@@ -45,4 +45,4 @@ If those variables are not set, or if the Supabase REST API is unavailable, the 
 npm run db:check
 ```
 
-The check verifies the 1,250-question count, 250 objectives, valid practice sets, and 6 full-length exams with 390 unique exact questions.
+The check verifies the 1,350-question count, 250 generated objectives, 100 senior practice questions, valid practice sets, and 6 full-length exams with 390 unique exact questions.

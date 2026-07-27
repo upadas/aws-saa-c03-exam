@@ -1,7 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fullLengthExams, questions, questionSets } from '../src/data/questionSets.js'
+import {
+  fullLengthExams,
+  generatedBankQuestions,
+  questions,
+  questionSets,
+} from '../src/data/questionSets.js'
+import { proPracticeQuestions } from '../src/data/proPracticeBank.js'
 import {
   DOMAIN_META,
   EXAM_DOMAIN_COUNTS,
@@ -152,12 +158,20 @@ function validateExport() {
     ...validateFullLengthExams(fullLengthExams, questions),
   ]
 
-  if (questions.length !== 1250) {
-    issues.push(`Expected 1250 questions, found ${questions.length}.`)
+  if (generatedBankQuestions.length !== 1250) {
+    issues.push(`Expected 1250 generated questions, found ${generatedBankQuestions.length}.`)
   }
 
-  if (new Set(questions.map(question => question.objectiveId)).size !== 250) {
-    issues.push('Expected 250 unique objectives.')
+  if (proPracticeQuestions.length !== 100) {
+    issues.push(`Expected 100 pro practice questions, found ${proPracticeQuestions.length}.`)
+  }
+
+  if (questions.length !== generatedBankQuestions.length + proPracticeQuestions.length) {
+    issues.push(`Expected ${generatedBankQuestions.length + proPracticeQuestions.length} total questions, found ${questions.length}.`)
+  }
+
+  if (new Set(generatedBankQuestions.map(question => question.objectiveId)).size !== 250) {
+    issues.push('Expected 250 generated objectives.')
   }
 
   return issues
@@ -252,7 +266,10 @@ if (issues.length) {
 
 const summary = {
   questions: questions.length,
+  generatedQuestions: generatedBankQuestions.length,
+  proPracticeQuestions: proPracticeQuestions.length,
   objectives: new Set(questions.map(question => question.objectiveId)).size,
+  generatedObjectives: new Set(generatedBankQuestions.map(question => question.objectiveId)).size,
   practiceSets: questionSets.length,
   fullLengthExams: fullLengthExams.length,
   fullLengthExamQuestions: fullLengthExams.flatMap(exam => exam.questionIds).length,

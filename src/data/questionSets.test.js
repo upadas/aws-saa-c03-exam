@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { fullLengthExams, questions, questionSets } from './questionSets.js'
+import { fullLengthExams, generatedBankQuestions, questions, questionSets } from './questionSets.js'
+import { proPracticeQuestions } from './proPracticeBank.js'
+import { PRACTICE_DOMAIN_PATTERN, PRACTICE_RESPONSE_PATTERN } from '../quizLogic.js'
 import {
   DOMAIN_META,
   EXAM_DOMAIN_COUNTS,
@@ -17,19 +19,20 @@ const qaReport = JSON.parse(
   fs.readFileSync(new URL('../../aws-saa-c03-phase1-4/QA_REPORT.json', import.meta.url), 'utf8'),
 )
 
-test('question bank imports the complete phase 1-4 handoff bank', () => {
-  assert.equal(questions.length, qaReport.variant_question_count)
-  assert.equal(new Set(questions.map(question => question.objectiveId)).size, qaReport.objective_count)
+test('question bank imports the complete phase 1-4 handoff bank plus the pro practice bank', () => {
+  assert.equal(generatedBankQuestions.length, qaReport.variant_question_count)
+  assert.equal(questions.length, qaReport.variant_question_count + proPracticeQuestions.length)
+  assert.equal(new Set(generatedBankQuestions.map(question => question.objectiveId)).size, qaReport.objective_count)
   assert.equal(questionSets.length, 10)
   assert.equal(fullLengthExams.length, 6)
   assert.deepEqual(validateQuestionSets(questionSets, questions), [])
   assert.deepEqual(validateFullLengthExams(fullLengthExams, questions), [])
 })
 
-test('questions preserve objective, variant, adaptive, and answer metadata', () => {
+test('generated questions preserve objective, variant, adaptive, and answer metadata', () => {
   const ids = new Set()
 
-  questions.forEach(question => {
+  generatedBankQuestions.forEach(question => {
     ids.add(question.id)
     assert.ok(Object.hasOwn(DOMAIN_META, question.domain), `${question.id} has unsupported domain`)
     assert.match(question.difficulty, /^(Easy|Medium|Hard)$/)
@@ -62,11 +65,11 @@ test('questions preserve objective, variant, adaptive, and answer metadata', () 
     assert.equal(answerMatches(question, []), false)
   })
 
-  assert.equal(ids.size, questions.length)
+  assert.equal(ids.size, generatedBankQuestions.length)
 })
 
-test('each objective has exactly five variants', () => {
-  const variantsByObjective = questions.reduce((map, question) => {
+test('each generated objective has exactly five variants', () => {
+  const variantsByObjective = generatedBankQuestions.reduce((map, question) => {
     const variants = map.get(question.objectiveId) || new Set()
     variants.add(question.variant)
     map.set(question.objectiveId, variants)
@@ -78,13 +81,13 @@ test('each objective has exactly five variants', () => {
   })
 })
 
-test('domain and difficulty distributions still match the QA report', () => {
-  const domainDistribution = questions.reduce((distribution, question) => {
+test('generated domain and difficulty distributions still match the QA report', () => {
+  const domainDistribution = generatedBankQuestions.reduce((distribution, question) => {
     const shortDomain = DOMAIN_META[question.domain].short
     distribution[shortDomain] = (distribution[shortDomain] || 0) + 1
     return distribution
   }, {})
-  const difficultyDistribution = questions.reduce((distribution, question) => {
+  const difficultyDistribution = generatedBankQuestions.reduce((distribution, question) => {
     distribution[question.difficulty] = (distribution[question.difficulty] || 0) + 1
     return distribution
   }, {})
@@ -118,8 +121,8 @@ test('normal practice sets mix single, choose-two, and choose-three questions wi
   })
 })
 
-test('question bank includes single, choose-two, and choose-three items', () => {
-  const typeCounts = questions.reduce((counts, question) => {
+test('generated question bank includes single, choose-two, and choose-three items', () => {
+  const typeCounts = generatedBankQuestions.reduce((counts, question) => {
     const key = question.correctOptionIds.length === 3
       ? 'chooseThree'
       : question.correctOptionIds.length === 2
@@ -155,16 +158,16 @@ test('full-length exam forms follow the exam guide distribution without exact qu
   })
 })
 
-test('question bank displays exam-style compound scenarios and nuanced distractors', () => {
-  const averagePromptLength = questions.reduce((sum, question) => sum + question.question.length, 0) / questions.length
-  const multiAnswerQuestions = questions.filter(question => question.correctOptionIds.length > 1)
-  const hardQuestions = questions.filter(question => question.difficulty === 'Hard')
-  const nuancedDistractorQuestions = questions.filter(question => question.options.some(option => (
+test('generated question bank displays exam-style compound scenarios and nuanced distractors', () => {
+  const averagePromptLength = generatedBankQuestions.reduce((sum, question) => sum + question.question.length, 0) / generatedBankQuestions.length
+  const multiAnswerQuestions = generatedBankQuestions.filter(question => question.correctOptionIds.length > 1)
+  const hardQuestions = generatedBankQuestions.filter(question => question.difficulty === 'Hard')
+  const nuancedDistractorQuestions = generatedBankQuestions.filter(question => question.options.some(option => (
     !option.correct
       && /\b(even though|assuming|without|instead of|only|bypassing|omitting|leaving|relying)\b/i.test(option.text)
   )))
-  const s3EndpointQuestion = questions.find(question => question.id === 'Q-SAA-031-5')
-  const transferAccelerationQuestion = questions.find(question => question.id === 'Q-SAA-102-5')
+  const s3EndpointQuestion = generatedBankQuestions.find(question => question.id === 'Q-SAA-031-5')
+  const transferAccelerationQuestion = generatedBankQuestions.find(question => question.id === 'Q-SAA-102-5')
 
   assert.ok(averagePromptLength > 700, 'questions should read like scenario stems, not flashcards')
   assert.ok(
@@ -176,7 +179,7 @@ test('question bank displays exam-style compound scenarios and nuanced distracto
     'hard variants should include production-readiness tradeoffs',
   )
   assert.ok(
-    nuancedDistractorQuestions.length > questions.length * 0.75,
+    nuancedDistractorQuestions.length > generatedBankQuestions.length * 0.75,
     'most questions should contain at least one plausible near-miss distractor',
   )
   assert.match(s3EndpointQuestion.question, /gateway endpoint and route-table update/i)
@@ -189,4 +192,55 @@ test('session shuffling keeps generated correct option ids answerable', () => {
   assert.equal(sessionQuestion.options.length, 4)
   assert.equal(answerMatches(sessionQuestion, sessionQuestion.answers), true)
   assert.equal(new Set(sessionQuestion.options.map(option => option.id)).size, 4)
+})
+
+test('pro practice bank contains 100 well-formed senior-level questions', () => {
+  assert.equal(proPracticeQuestions.length, 100)
+  const ids = new Set()
+  const expectedOptionCount = { 1: 4, 2: 5, 3: 6 }
+
+  proPracticeQuestions.forEach(question => {
+    ids.add(question.id)
+    assert.match(question.id, /^PRO-\d{3}$/)
+    assert.ok(Object.hasOwn(DOMAIN_META, question.domain), `${question.id} has unsupported domain`)
+    assert.match(question.difficulty, /^(Hard|Medium)$/, `${question.id} must be senior-level difficulty`)
+    assert.ok(question.question.length > 200, `${question.id} should be a concrete scenario stem`)
+    assert.ok(question.intentGroup.length > 3, `${question.id} needs an intent group`)
+    assert.equal(question.options.length, expectedOptionCount[question.correctOptionIds.length])
+    assert.equal(question.type, question.correctOptionIds.length > 1 ? 'multiple' : 'single')
+    assert.deepEqual(question.answers, question.correctOptionIds)
+    assert.deepEqual(
+      question.options.filter(option => option.correct).map(option => option.id),
+      question.correctOptionIds,
+    )
+    question.options.forEach(option => {
+      assert.ok(option.text.length > 20, `${question.id} option ${option.id} should be a substantive choice`)
+      assert.ok(option.explanation.length > 20, `${question.id} option ${option.id} needs an explanation`)
+    })
+    assert.ok(question.explanation.length > 40, `${question.id} needs a question-level explanation`)
+    assert.equal(answerMatches(question, question.correctOptionIds), true)
+    assert.equal(answerMatches(question, []), false)
+  })
+
+  assert.equal(ids.size, 100)
+  const hardCount = proPracticeQuestions.filter(question => question.difficulty === 'Hard').length
+  assert.ok(hardCount >= 60, 'pro bank should stay predominantly Hard')
+})
+
+test('practice sets use the pro bank, follow the blueprint pattern, and never repeat an intent in a set', () => {
+  const byId = new Map(questions.map(question => [question.id, question]))
+
+  questionSets.forEach((set, setIndex) => {
+    const setQuestions = set.questionIds.map(id => byId.get(id))
+    const intents = new Set()
+
+    setQuestions.forEach((question, slotIndex) => {
+      assert.match(question.id, /^PRO-\d{3}$/, `${set.name} should draw from the pro bank`)
+      assert.equal(question.practiceSet, setIndex + 1)
+      assert.equal(question.domain, PRACTICE_DOMAIN_PATTERN[slotIndex])
+      assert.equal(question.correctOptionIds.length, PRACTICE_RESPONSE_PATTERN[slotIndex])
+      assert.ok(!intents.has(question.intentGroup), `${set.name} repeats intent ${question.intentGroup}`)
+      intents.add(question.intentGroup)
+    })
+  })
 })
