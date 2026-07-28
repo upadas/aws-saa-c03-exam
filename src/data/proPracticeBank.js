@@ -328,13 +328,13 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Create an origin access control for the origin and update the bucket policy to allow the cloudfront.amazonaws.com service principal only when aws:SourceArn equals the distribution's ARN.",
+        "text": "Create an origin access control for the origin and update the bucket policy to allow cloudfront.amazonaws.com only when aws:SourceArn equals the distribution's ARN.",
         "correct": true,
         "explanation": "OAC lets CloudFront sign origin requests, and the aws:SourceArn condition scopes bucket access to this one distribution, closing the direct-URL path without touching the client experience."
       },
       {
         "id": "b",
-        "text": "Update the bucket policy to allow s3:GetObject for the cloudfront.amazonaws.com service principal and enable Block Public Access on the bucket.",
+        "text": "Update the bucket policy to allow s3:GetObject for the cloudfront.amazonaws.com service principal and enable the S3 Block Public Access settings on the bucket to stop direct anonymous reads.",
         "correct": false,
         "explanation": "Without an aws:SourceArn condition, any CloudFront distribution in any AWS account could be configured to read the bucket, so the assets are not restricted to this specific distribution."
       },
@@ -550,7 +550,7 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Purchase a 3-year Compute Savings Plan whose hourly commitment matches the web tier's steady 40-vCPU baseline.",
+        "text": "Purchase a 3-year Compute Savings Plan with an hourly spend commitment sized to the web tier's steady 40-vCPU baseline.",
         "correct": true,
         "explanation": "The web baseline runs 24/7 with little variation, so a commitment sized exactly to it captures the deep discount with essentially no risk of paying for idle commitment."
       },
@@ -790,19 +790,19 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Create an organization trail in the management account and enable log file integrity validation on it.",
+        "text": "Create an organization trail in the management account, enable log file integrity validation, and deliver the logs to a centralized S3 bucket.",
         "correct": false,
         "explanation": "An organization trail centralizes and validates logging, but it does not stop a member account administrator from stopping or deleting the account's own trails, and it does nothing to block organizations:LeaveOrganization. It is a logging control, not a preventive one."
       },
       {
         "id": "b",
-        "text": "Attach IAM permissions boundaries to all IAM users and roles in each member account that deny CloudTrail write actions.",
+        "text": "Attach IAM permissions boundaries that deny cloudtrail:StopLogging, cloudtrail:DeleteTrail, and organizations:LeaveOrganization to every IAM user and role in each member account.",
         "correct": false,
         "explanation": "Permissions boundaries are managed inside each member account, so an account administrator can detach or edit them. They cannot enforce a guardrail that member-account admins are unable to override."
       },
       {
         "id": "c",
-        "text": "Attach a service control policy at the organization root that denies cloudtrail:StopLogging, cloudtrail:DeleteTrail, and organizations:LeaveOrganization.",
+        "text": "Attach an SCP at the organization root denying cloudtrail:StopLogging, cloudtrail:DeleteTrail, and organizations:LeaveOrganization.",
         "correct": true,
         "explanation": "SCPs are evaluated outside member-account control and cap what any principal in the account can do, including administrators. A deny SCP at the root is the only listed option that makes both actions fail preventively across all 40 accounts."
       },
@@ -941,13 +941,13 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Create an RDS Proxy in front of the database and update the Lambda functions to connect to the proxy endpoint.",
+        "text": "Create an RDS Proxy for the database and point the Lambda functions at the proxy endpoint.",
         "correct": true,
         "explanation": "RDS Proxy pools and multiplexes thousands of Lambda connections onto a small set of database connections, absorbing spikes without exhausting the writer. The only code change is swapping the endpoint, which matches the least-change constraint."
       },
       {
         "id": "b",
-        "text": "Increase the max_connections value in a custom DB parameter group and reboot the instance.",
+        "text": "Increase the max_connections value in a custom DB parameter group, apply the parameter group to the instance, and reboot it.",
         "correct": false,
         "explanation": "Raising max_connections trades connection slots for per-connection memory on an instance that is not CPU bound but will become memory bound. The next larger spike hits the new ceiling, so the root cause of unpooled connections remains."
       },
@@ -959,7 +959,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "d",
-        "text": "Add two read replicas and configure the Lambda functions to distribute queries across them.",
+        "text": "Add two read replicas and configure the Lambda functions to distribute their database queries across the replica endpoints.",
         "correct": false,
         "explanation": "Order processing is write-heavy, and writes must still go to the single writer, so its connection limit is still exhausted during spikes. Splitting reads also requires more application change than swapping an endpoint."
       }
@@ -1101,7 +1101,7 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Duplicate the secret into account B and run a scheduled Lambda function to keep the two copies synchronized.",
+        "text": "Duplicate the secret into a Secrets Manager secret in account B and run a scheduled Lambda function to keep the two copies synchronized after each rotation.",
         "correct": false,
         "explanation": "Copying the secret creates a second source of truth that can drift between rotations, violating the single-source requirement. It also adds custom synchronization code to maintain."
       },
@@ -1119,7 +1119,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "d",
-        "text": "Add a resource policy on the secret granting account B's role secretsmanager:GetSecretValue, and grant that role kms:Decrypt in the KMS key policy.",
+        "text": "Grant account B's role secretsmanager:GetSecretValue in the secret's resource policy and kms:Decrypt in the KMS key policy.",
         "correct": true,
         "explanation": "Cross-account secret access needs both halves: the secret's resource policy authorizes retrieval, and the customer managed key's policy authorizes decryption of the protected value. This keeps the secret in account A with exactly the permissions required."
       }
@@ -2342,13 +2342,13 @@ export const proPracticeQuestions = [
       },
       {
         "id": "b",
-        "text": "Allow iam:CreateRole and iam:PutRolePolicy for developers only when the iam:PermissionsBoundary condition key equals the ARN of a platform-managed boundary policy.",
+        "text": "Allow developers iam:CreateRole and iam:PutRolePolicy only when iam:PermissionsBoundary equals the ARN of a platform-managed boundary policy.",
         "correct": true,
         "explanation": "Correct. The condition forces every developer-created role to carry the permissions boundary, so a role's effective permissions can never exceed the boundary's ceiling regardless of what identity policies are attached, and it is enforced preventively at creation time."
       },
       {
         "id": "c",
-        "text": "Attach a service control policy to each development account that allowlists only the AWS services the security organization has approved.",
+        "text": "Attach a service control policy to each development account that limits every principal in the account to the AWS services and actions the security organization has approved.",
         "correct": false,
         "explanation": "An SCP caps every principal in the account uniformly; it cannot express a distinct ceiling for developer-created application roles versus other principals, and broad account-level restrictions would also constrain the platform team's own roles."
       },
@@ -2499,13 +2499,13 @@ export const proPracticeQuestions = [
       },
       {
         "id": "c",
-        "text": "Create one CloudFront distribution with the load balancer as origin, an /assets/* behavior that caches with long TTLs, and a default behavior whose cache policy keys on the session cookie and Accept-Language header.",
+        "text": "Create a CloudFront distribution with the ALB as origin, a long-TTL /assets/* behavior, and a default cache policy keyed on the session cookie and Accept-Language header.",
         "correct": true,
         "explanation": "Correct. Separate cache behaviors let static assets cache aggressively at the edge while dynamic requests ride CloudFront's optimized connections to the origin, and keying the cache on the cookie and header prevents cross-customer page leakage."
       },
       {
         "id": "d",
-        "text": "Replicate the full application stack to eu-west-1 and ap-southeast-1 and use Route 53 latency-based routing across the three regions.",
+        "text": "Replicate the full application stack, including its data stores, to eu-west-1 and ap-southeast-1 and use Route 53 latency-based routing to send customers to the nearest Region.",
         "correct": false,
         "explanation": "Multi-region replication reduces latency but introduces data replication, deployment, and consistency work far beyond what the requirement calls for when edge caching solves the problem."
       }
@@ -2590,7 +2590,7 @@ export const proPracticeQuestions = [
         "id": "f",
         "text": "Add an S3 lifecycle rule that transitions objects in the destination prefix to S3 Glacier Deep Archive 0 days after creation.",
         "correct": true,
-        "explanation": "Correct. Snowball imports land in the S3 storage class configured for the bucket ingest, and a zero-day lifecycle transition ensures both bulk and delta objects move to Deep Archive without accruing Standard charges."
+        "explanation": "Correct. Snowball imports always land in S3 Standard, so a zero-day lifecycle transition ensures both bulk and delta objects move to Deep Archive without accruing Standard charges."
       }
     ],
     "answers": [
@@ -2647,13 +2647,13 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Enable IAM database authentication on the cluster and have the task's IAM role generate a short-lived authentication token for each new connection.",
+        "text": "Enable IAM database authentication on the cluster and generate a short-lived token from the task's IAM role for each new connection.",
         "correct": true,
         "explanation": "Correct. IAM database authentication replaces the password with a 15-minute signed token derived from the task role, so no static credential exists anywhere and each new connection authenticates with workload identity."
       },
       {
         "id": "b",
-        "text": "Store the database credentials in AWS Secrets Manager with automatic rotation every 30 days and fetch them at container startup.",
+        "text": "Store the database credentials in AWS Secrets Manager, enable automatic rotation every 30 days with a rotation Lambda function, and fetch them at container startup.",
         "correct": false,
         "explanation": "Rotation improves hygiene, but a password still exists in a secrets store for up to 30 days at a time, which violates the mandate as stated."
       },
@@ -2804,7 +2804,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "b",
-        "text": "Stripe multiple gp3 volumes in a RAID 0 array to aggregate IOPS across the set.",
+        "text": "Stripe multiple gp3 volumes together in a RAID 0 array to aggregate their provisioned IOPS across the set.",
         "correct": false,
         "explanation": "RAID 0 can aggregate IOPS but multiplies failure exposure, since one volume failure destroys the array, and adds operational burden a single provisioned volume avoids."
       },
@@ -2816,7 +2816,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "d",
-        "text": "Attach an io2 Block Express volume sized for the workload to a Nitro-based instance that supports it.",
+        "text": "Attach an io2 Block Express volume sized for the workload to a supported Nitro-based instance.",
         "correct": true,
         "explanation": "Correct. io2 Block Express supports up to 256,000 IOPS per volume with sub-millisecond latency and 99.999% durability, and it persists independently of the instance."
       }
@@ -2865,7 +2865,7 @@ export const proPracticeQuestions = [
     "service": "Compute Optimizer",
     "difficulty": "Hard",
     "type": "multiple",
-    "question": "A SaaS company's monthly bill shows that 45% of EC2 spend comes from non-production accounts. Dev and test environments run 24/7 even though engineers work roughly 50 hours a week, CloudWatch shows most non-production instances averaging under 10% CPU on instance types two sizes larger than needed, and a fleet of always-on m5.2xlarge CI/CD build runners sits idle between builds. Builds are containerized, stateless, and can safely be retried if interrupted. Which combination of steps will meet these requirements MOST cost-effectively? (Choose three.)",
+    "question": "A SaaS company's monthly bill shows that 45% of EC2 spend comes from non-production accounts. Dev and test environments run 24/7 even though engineers work roughly 50 hours a week, CloudWatch shows most non-production instances averaging under 10% CPU on instance types two sizes larger than needed, and a fleet of always-on m5.2xlarge CI/CD build runners sits idle between builds. Builds are containerized, stateless, and can safely be retried if interrupted. The company wants to cut non-production EC2 spend without affecting engineers during working hours or reducing the reliability of completed builds. Which combination of steps will meet these requirements MOST cost-effectively? (Choose three.)",
     "options": [
       {
         "id": "a",
@@ -3571,7 +3571,7 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Enable stage-level caching on the REST API with a TTL aligned to the hourly refresh and cache keys on the rate-lookup parameters.",
+        "text": "Enable stage caching on the REST API with a TTL aligned to the hourly refresh and parameter-based cache keys.",
         "correct": true,
         "explanation": "A stage cache serves the repeated identical GETs from API Gateway itself, cutting both Lambda invocations and RDS queries, and an hourly-aligned TTL matches the data's change rate."
       },
@@ -3583,13 +3583,13 @@ export const proPracticeQuestions = [
       },
       {
         "id": "c",
-        "text": "Add a DAX cluster in front of the data store and point the Lambda function's reads at it.",
+        "text": "Add an Amazon DynamoDB Accelerator (DAX) cluster in front of the data store and point the Lambda function's read queries at the cache.",
         "correct": false,
         "explanation": "DAX only accelerates DynamoDB; the rate tables live in RDS for PostgreSQL, so DAX cannot sit in this read path at all."
       },
       {
         "id": "d",
-        "text": "Scale the RDS instance to the next larger class and add a read replica for the rate-lookup queries.",
+        "text": "Scale the RDS for PostgreSQL instance to the next larger instance class and add a read replica dedicated to serving the rate-lookup queries.",
         "correct": false,
         "explanation": "Larger instances and replicas absorb the redundant reads at a permanently higher cost instead of eliminating them, and Lambda invocation spend is untouched."
       }
@@ -4130,7 +4130,7 @@ export const proPracticeQuestions = [
         "id": "e",
         "text": "Use S3 Intelligent-Tiering with the archive access tiers enabled so objects move between tiers automatically as access changes.",
         "correct": false,
-        "explanation": "The access pattern is already known and predictable, so paying per-object monitoring charges on billions of small files to rediscover it adds cost without benefit."
+        "explanation": "Intelligent-Tiering does not monitor or auto-tier objects smaller than 128 KB, so these sub-100 KB files would never reach the archive tiers, and the known two-phase access pattern needs no automatic discovery anyway."
       },
       {
         "id": "f",
@@ -4580,29 +4580,29 @@ export const proPracticeQuestions = [
     "service": "Storage Gateway",
     "difficulty": "Hard",
     "type": "single",
-    "question": "An architecture firm stores 40 TB of project files on an aging on-premises Windows file server that staff access over SMB. The firm wants every file protected in AWS, and when a designer deletes or corrupts a file, recently used files must be restorable in seconds from the office without waiting on WAN transfers. Leadership has rejected purchasing a replacement NAS, and older projects should age into cheaper storage automatically. Which solution will meet these requirements?",
+    "question": "An architecture firm stores 40 TB of project files on an aging on-premises Windows file server that staff access over SMB. Leadership has rejected purchasing a replacement NAS and wants the failing server retired. Every project file must be stored durably in AWS, staff must keep opening recently used files over SMB at LAN speed without waiting on WAN transfers, and older projects should age into cheaper storage automatically. Which solution will meet these requirements?",
     "options": [
       {
         "id": "a",
-        "text": "Run nightly AWS DataSync task executions that copy the file shares to Amazon S3 and restore files from S3 when users request them.",
+        "text": "Run nightly AWS DataSync task executions that copy the file shares to Amazon S3, and have staff retrieve files from S3 over the network when they need them.",
         "correct": false,
-        "explanation": "DataSync protects the data but restores must travel back over the WAN, so the seconds-level recovery of recent files in the office is not achievable."
+        "explanation": "DataSync copies the data into S3 but provides no ongoing SMB share, so the firm would still depend on the failing file server, and every retrieval from S3 crosses the WAN instead of being served at LAN speed."
       },
       {
         "id": "b",
         "text": "Deploy an AWS Backup gateway on premises and schedule backup plans that store the file server's data in a backup vault.",
         "correct": false,
-        "explanation": "Backup gateway protects VMware virtual machines rather than presenting an SMB share, and restores pull from the vault across the WAN rather than from a local cache."
+        "explanation": "Backup gateway protects VMware virtual machines rather than presenting an SMB share, so it cannot replace the retiring file server, and restores pull from the vault across the WAN rather than from a local cache."
       },
       {
         "id": "c",
-        "text": "Deploy an Amazon S3 File Gateway on existing virtualization hosts, expose SMB shares backed by S3, and apply lifecycle rules to age older objects into archival classes.",
+        "text": "Deploy an Amazon S3 File Gateway on the existing hosts, expose SMB shares backed by S3, and use lifecycle rules to age older objects into archival classes.",
         "correct": true,
         "explanation": "File Gateway keeps recently used files in its local cache for LAN-speed SMB reads while every file is durably stored as S3 objects that lifecycle rules can tier down over time."
       },
       {
         "id": "d",
-        "text": "Create an Amazon EFS file system, connect the office over a Site-to-Site VPN, and mount the file system from the on-premises clients.",
+        "text": "Create an Amazon EFS file system with lifecycle management enabled, connect the office over a Site-to-Site VPN, and mount the file system from the on-premises clients.",
         "correct": false,
         "explanation": "EFS is NFS rather than SMB, and every read would traverse the VPN with WAN latency, so neither the protocol nor the local-speed recovery requirement is met."
       }
@@ -4617,7 +4617,7 @@ export const proPracticeQuestions = [
       "c"
     ],
     "answerSummary": "Amazon S3 File Gateway with a local cache exposing SMB shares backed by S3, plus lifecycle rules for aging data.",
-    "explanation": "The intersecting constraints are SMB continuity for staff, seconds-level local restores of recent files without new NAS hardware, and automatic tiering of old projects. Only S3 File Gateway satisfies all of them, because its local cache serves hot files at LAN speed while S3 provides the durable copy and lifecycle transitions; DataSync and Backup gateway lack the local cache, and EFS fails on protocol and latency.",
+    "explanation": "The intersecting constraints are retiring the server without new NAS hardware, SMB continuity with LAN-speed access to recently used files, a durable copy of everything in AWS, and automatic tiering of old projects. Only S3 File Gateway satisfies all of them, because its local cache serves hot files at LAN speed while S3 provides the durable copy and lifecycle transitions; DataSync and Backup gateway provide no SMB access path, and EFS fails on protocol and latency.",
     "trigger": "File Gateway for hybrid SMB protection with local cache",
     "intentGroup": "file-gateway-hybrid-backup",
     "practiceSet": 6,
@@ -4661,19 +4661,19 @@ export const proPracticeQuestions = [
       },
       {
         "id": "b",
-        "text": "Configure SAML 2.0 federation with the corporate IdP separately in each member account and create team-scoped IAM roles for federated users to assume.",
+        "text": "Configure SAML 2.0 federation with the corporate IdP separately in each member account, create team-scoped IAM roles for federated users to assume, and update the mappings as teams reorganize.",
         "correct": false,
         "explanation": "Account-by-account SAML federation requires configuring the IdP trust and maintaining roles in all 40 accounts, and new accounts do not inherit anything automatically."
       },
       {
         "id": "c",
-        "text": "Enable IAM Identity Center for the organization, connect the corporate IdP, pass team and cost-center attributes for access control, and reference them as condition keys in a small set of shared permission sets.",
+        "text": "Enable IAM Identity Center with the corporate IdP as its identity source, pass team and cost-center attributes for access control, and reference them in shared permission set conditions.",
         "correct": true,
         "explanation": "Identity Center with ABAC pushes the IdP's team and cost-center attributes into session tags, so one set of permission sets scales across all 40 accounts and reorganizations require no policy changes."
       },
       {
         "id": "d",
-        "text": "Create IAM users tagged with team and cost-center values in each account, enforce MFA, and write policies that compare resource tags to the user's tags.",
+        "text": "Create IAM users tagged with team and cost-center values in each member account, enforce MFA, and write policies that compare each resource's tags to the requesting user's principal tags.",
         "correct": false,
         "explanation": "Tag-based conditions are the right ABAC idea, but per-account IAM users abandon the corporate IdP as the source of truth and multiply user administration across 40 accounts."
       }
@@ -4966,7 +4966,7 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Maintain network ACL deny rules for the attacking IP ranges on the public subnets, updated from threat intelligence feeds.",
+        "text": "Maintain network ACL deny rules for the attacking IP ranges on the public subnets, updated automatically from commercial threat intelligence feeds.",
         "correct": false,
         "explanation": "NACL entries are static, capped in number, and evaluated per subnet; sources that rotate every few minutes across residential ranges outrun any deny-list update process."
       },
@@ -4978,13 +4978,13 @@ export const proPracticeQuestions = [
       },
       {
         "id": "c",
-        "text": "Migrate authentication to Amazon Cognito user pools and enable advanced security features to block sign-in attempts from risky sources.",
+        "text": "Migrate authentication to Amazon Cognito user pools and enable advanced security features so adaptive authentication blocks sign-in attempts from risky sources.",
         "correct": false,
         "explanation": "Cognito's adaptive authentication is effective, but the application authenticates against its own identity store, so this forces a full authentication-stack migration far beyond the stated requirement."
       },
       {
         "id": "d",
-        "text": "Associate an AWS WAF web ACL with the ALB that applies a rate-based rule scoped to /login and adds the Account Takeover Prevention managed rule group.",
+        "text": "Attach an AWS WAF web ACL to the ALB with a rate-based rule scoped to /login plus the Account Takeover Prevention managed rule group.",
         "correct": true,
         "explanation": "A rate-based rule throttles each source that exceeds the login-request threshold without touching normal global traffic, and the ATP managed rules add stolen-credential and anomaly detection for the same endpoint."
       }
@@ -5579,13 +5579,13 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Double the shard count of the stream to 24 shards so that the aggregate read capacity available to the consumers increases.",
+        "text": "Use the UpdateShardCount API to double the stream to 24 shards so that the aggregate read capacity available to the consumers increases.",
         "correct": false,
         "explanation": "Resharding raises aggregate throughput but each shard's 2 MB/s read limit is still shared by all five consumers, so contention and polling latency persist while shard costs double."
       },
       {
         "id": "b",
-        "text": "Register each of the five applications as an enhanced fan-out consumer of the stream so records are pushed to each over HTTP/2.",
+        "text": "Register each of the five consuming applications as an enhanced fan-out consumer of the stream.",
         "correct": true,
         "explanation": "Enhanced fan-out gives every registered consumer its own dedicated 2 MB/s per shard and pushes records over HTTP/2 with typical ~70 ms propagation delay, eliminating the shared-limit contention while keeping ordering and replay."
       },
@@ -6126,7 +6126,7 @@ export const proPracticeQuestions = [
     "service": "Aurora",
     "difficulty": "Hard",
     "type": "single",
-    "question": "An e-commerce company runs an Amazon Aurora MySQL cluster with a db.r6g.8xlarge writer, one db.r6g.8xlarge replica reserved for failover, and two db.r6g.xlarge replicas that serve reporting queries. During a recent failover, Aurora promoted one of the small reporting replicas to writer, and the undersized instance could not absorb the write workload, causing a 40-minute brownout during peak trading. The company must ensure that any future automatic failover promotes the same-size replica first while keeping the reporting replicas in the cluster. Which solution will meet these requirements with the LEAST operational overhead?",
+    "question": "An e-commerce company runs an Amazon Aurora MySQL cluster with a db.r6g.8xlarge writer, one db.r6g.8xlarge replica reserved for failover, and two db.r6g.xlarge replicas that serve reporting queries. During a recent failover, Aurora promoted one of the small reporting replicas to writer, and the undersized instance could not absorb the write workload, causing a 40-minute brownout during peak trading. The company must ensure that any future automatic failover promotes the same-size replica first, must keep the reporting replicas in the cluster, and must not increase instance costs. Which solution will meet these requirements with the LEAST operational overhead?",
     "options": [
       {
         "id": "a",
@@ -6138,7 +6138,7 @@ export const proPracticeQuestions = [
         "id": "b",
         "text": "Resize the two reporting replicas to db.r6g.8xlarge so that any replica Aurora promotes can absorb the write workload.",
         "correct": false,
-        "explanation": "Upsizing makes every promotion safe but roughly quadruples the reporting replicas' instance cost to solve what is a promotion-ordering problem, not a capacity problem."
+        "explanation": "Upsizing makes every promotion safe but roughly quadruples the reporting replicas' instance cost, violating the stated requirement not to increase instance costs for what is a promotion-ordering problem."
       },
       {
         "id": "c",
@@ -6352,7 +6352,7 @@ export const proPracticeQuestions = [
     "options": [
       {
         "id": "a",
-        "text": "Use the AWS CLI high-level s3 commands with transfer configuration tuned for multipart uploads, so parts upload in parallel and failed parts are retried individually.",
+        "text": "Switch the script to the AWS CLI high-level s3 commands, which perform multipart uploads with parallel parts and per-part retries.",
         "correct": true,
         "explanation": "Multipart upload is the designed mechanism for objects over 5 GB; parallel parts increase throughput and only failed parts are retried, all through the CLI the script already uses."
       },
@@ -6364,7 +6364,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "c",
-        "text": "Deploy an AWS DataSync agent on the build instances and schedule a nightly DataSync task to move the artifact into the S3 bucket.",
+        "text": "Deploy an AWS DataSync agent on the build instances and schedule a nightly DataSync task that transfers the artifact from the instance file system into the S3 bucket.",
         "correct": false,
         "explanation": "DataSync can move the file reliably, but installing and operating an agent plus task scheduling is a much larger footprint than the requested minimal change to an existing CLI script."
       },
@@ -6669,7 +6669,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "b",
-        "text": "Redesign the partition key to append a calculated shard suffix to device_id for the gateway devices, and merge the shards at read time.",
+        "text": "Append a calculated shard suffix to the gateway devices' partition key values, and merge the shards at read time.",
         "correct": true,
         "explanation": "Write sharding spreads each hot gateway's items across many partition key values and therefore many partitions, which is the only way to exceed the fixed per-key throughput ceiling."
       },
@@ -6921,7 +6921,7 @@ export const proPracticeQuestions = [
       },
       {
         "id": "d",
-        "text": "Migrate the queues to an Amazon MQ for RabbitMQ broker that uses the cluster deployment mode spanning multiple Availability Zones.",
+        "text": "Migrate the queues to an Amazon MQ for RabbitMQ cluster deployment that spans multiple Availability Zones.",
         "correct": true,
         "explanation": "An Amazon MQ RabbitMQ cluster deployment runs broker nodes across multiple AZs, keeps native AMQP compatibility so applications largely reconnect via a new endpoint, and AWS handles patching."
       }
@@ -7690,7 +7690,7 @@ export const proPracticeQuestions = [
         "id": "c",
         "text": "Create an AWS DataSync task between the file system and a new EFS file system in us-west-2, scheduled to run every hour.",
         "correct": false,
-        "explanation": "Hourly DataSync runs bound the recovery point at up to an hour of loss, and the team must operate agents-free task schedules, monitor transfer failures, and tune scan performance on a 6 TB tree, conflicting with both stated constraints."
+        "explanation": "Hourly DataSync runs bound the recovery point at up to an hour of loss, and the team must maintain task schedules, monitor transfer failures, and tune scan performance on a 6 TB tree, conflicting with both stated constraints."
       },
       {
         "id": "d",
