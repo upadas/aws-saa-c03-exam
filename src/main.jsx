@@ -24,7 +24,7 @@ import {
 import './styles.css'
 
 const storageSchemaVersion = 3
-const questionBankVersion = 'saa-c03-1250-plus-pro-practice-v4'
+const questionBankVersion = 'saa-c03-hand-authored-490-v5'
 const storageKey = 'saa-c03-progress-v2'
 const legacyStorageKey = 'saa-c03-progress-v1'
 
