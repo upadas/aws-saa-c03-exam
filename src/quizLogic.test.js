@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_COUNTS,
+  PRACTICE_RESPONSE_PATTERN,
   answerMatches,
   adaptiveQuestionWeight,
   buildQuestionReview,
@@ -15,12 +18,14 @@ import {
   validateQuestionSets,
 } from './quizLogic.js'
 
-const makeQuestion = (id, domain) => ({
+const makeQuestion = (id, domain, answerCount = 1) => ({
   id,
   domain,
   objectiveId: `${domain}-${id}`,
   objectiveName: `${domain} objective ${id}`,
-  answers: [0],
+  service: `${domain} service ${id}`,
+  services: [`${domain} service ${id}`],
+  answers: Array.from({ length: answerCount }, (_, index) => index),
   options: ['Correct option', 'Plausible distractor', 'Another distractor', 'Tradeoff distractor'],
 })
 
@@ -87,7 +92,7 @@ test('session option order stays stable when stored on the session question', ()
   assert.deepEqual(orderAfterNavigation, orderBefore)
 })
 
-test('adaptive selection boosts missed objectives and avoids duplicate questions', () => {
+test('normal adaptive practice avoids recently seen objectives even after a miss', () => {
   const questions = [
     { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
     { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
@@ -104,29 +109,159 @@ test('adaptive selection boosts missed objectives and avoids duplicate questions
       mastery: 0,
     },
   }
-  const sample = selectAdaptiveQuestions(questions, progress, 2, {}, () => 0)
+  const sample = selectAdaptiveQuestions(questions, progress, 1, {}, () => 0)
 
-  assert.equal(new Set(sample.map(question => question.id)).size, sample.length)
-  assert.equal(sample[0].objectiveId, 's3-endpoint')
+  assert.equal(sample[0].objectiveId, 'kms-policy')
   assert.ok(
-    adaptiveQuestionWeight(questions[1], progress['s3-endpoint']) >
+    adaptiveQuestionWeight(questions[1], progress['s3-endpoint'], { boostDrill: true }) >
       adaptiveQuestionWeight(questions[2], undefined),
   )
 })
 
-test('updateObjectiveProgress tracks objective mastery across variants', () => {
-  const sessionQuestions = [
-    createSessionQuestion({ ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
-    createSessionQuestion({ ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' }, () => 0),
+test('missed-concept mode drills the same objective with a different variant', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
   ]
-  const answers = Object.fromEntries(sessionQuestions.map(question => [question.id, question.answers]))
-  const progress = updateObjectiveProgress({}, sessionQuestions, answers, '2026-07-19T00:00:00.000Z')
+  const progress = {
+    's3-endpoint': {
+      objectiveId: 's3-endpoint',
+      attempts: 1,
+      correct: 0,
+      consecutiveCorrect: 0,
+      lastResult: 'incorrect',
+      needsDrill: true,
+      seenQuestionIds: [1],
+      mastery: 0,
+    },
+  }
+  const sample = selectAdaptiveQuestions(
+    questions,
+    progress,
+    2,
+    { missedOnly: true, allowRepeatedObjectives: true, boostDrill: true },
+    () => 0,
+  )
 
-  assert.equal(progress['s3-endpoint'].attempts, 2)
-  assert.equal(progress['s3-endpoint'].correct, 2)
-  assert.equal(progress['s3-endpoint'].consecutiveCorrect, 2)
-  assert.equal(progress['s3-endpoint'].seenQuestionIds.length, 2)
-  assert.ok(progress['s3-endpoint'].mastery > 0.8)
+  assert.equal(new Set(sample.map(question => question.id)).size, sample.length)
+  assert.deepEqual(sample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+  assert.equal(sample[0].id, 2)
+})
+
+test('adaptive practice can enforce a mixed single and multiple response pattern', () => {
+  const questions = Object.keys(DOMAIN_META).flatMap((domain, domainIndex) =>
+    Array.from({ length: 12 }, (_, index) =>
+      makeQuestion(
+        domainIndex * 100 + index,
+        domain,
+        PRACTICE_RESPONSE_PATTERN[index % PRACTICE_RESPONSE_PATTERN.length],
+      ),
+    ),
+  )
+
+  const sample = selectAdaptiveQuestions(
+    questions,
+    {},
+    PRACTICE_RESPONSE_PATTERN.length,
+    { domainPattern: PRACTICE_DOMAIN_PATTERN, responsePattern: PRACTICE_RESPONSE_PATTERN },
+    () => 0.31,
+  )
+  const responseCounts = sample.reduce((counts, question) => ({
+    ...counts,
+    [question.answers.length]: (counts[question.answers.length] || 0) + 1,
+  }), {})
+  const domainCounts = sample.reduce((counts, question) => ({
+    ...counts,
+    [question.domain]: (counts[question.domain] || 0) + 1,
+  }), {})
+  const serviceCount = new Set(sample.map(question => question.service || question.services?.[0])).size
+
+  assert.equal(sample.length, PRACTICE_RESPONSE_PATTERN.length)
+  assert.equal(new Set(sample.map(question => question.objectiveId)).size, sample.length)
+  assert.deepEqual(responseCounts, PRACTICE_RESPONSE_COUNTS)
+  assert.deepEqual(domainCounts, {
+    'Secure Architectures': 3,
+    'Resilient Architectures': 3,
+    'High-Performing Architectures': 2,
+    'Cost-Optimized Architectures': 2,
+  })
+  assert.equal(serviceCount, sample.length)
+})
+
+test('adaptive drill mode can intentionally repeat an objective', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
+  ]
+  const sample = selectAdaptiveQuestions(questions, {}, 2, { objectiveIds: ['s3-endpoint'], allowRepeatedObjectives: true }, () => 0)
+
+  assert.equal(sample.length, 2)
+  assert.deepEqual(sample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+})
+
+test('adaptive drill mode avoids back-to-back repeated objectives when alternatives exist', () => {
+  const questions = [
+    { ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint' },
+    { ...makeQuestion(3, 'Secure Architectures'), objectiveId: 'kms-policy' },
+    { ...makeQuestion(4, 'Secure Architectures'), objectiveId: 'kms-policy' },
+  ]
+  const sample = selectAdaptiveQuestions(
+    questions,
+    {},
+    4,
+    { objectiveIds: ['s3-endpoint', 'kms-policy'], allowRepeatedObjectives: true },
+    () => 0,
+  )
+
+  assert.equal(sample.length, 4)
+  sample.slice(1).forEach((question, index) => {
+    assert.notEqual(question.objectiveId, sample[index].objectiveId)
+  })
+})
+
+test('updateObjectiveProgress requires three correct variants for mastery', () => {
+  const sessionQuestions = [
+    createSessionQuestion({ ...makeQuestion(1, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 1 }, () => 0),
+    createSessionQuestion({ ...makeQuestion(2, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 2 }, () => 0),
+    createSessionQuestion({ ...makeQuestion(3, 'Secure Architectures'), objectiveId: 's3-endpoint', variant: 3 }, () => 0),
+  ]
+  const firstTwoAnswers = Object.fromEntries(sessionQuestions.slice(0, 2).map(question => [question.id, question.answers]))
+  const firstTwoProgress = updateObjectiveProgress({}, sessionQuestions.slice(0, 2), firstTwoAnswers, '2026-07-19T00:00:00.000Z')
+  const answers = Object.fromEntries(sessionQuestions.map(question => [question.id, question.answers]))
+  const progress = updateObjectiveProgress(firstTwoProgress, sessionQuestions.slice(2), answers, '2026-07-19T00:00:00.000Z')
+
+  assert.equal(firstTwoProgress['s3-endpoint'].attempts, 2)
+  assert.equal(firstTwoProgress['s3-endpoint'].correctVariantIds.length, 2)
+  assert.ok(firstTwoProgress['s3-endpoint'].mastery < 0.85)
+  assert.equal(progress['s3-endpoint'].attempts, 3)
+  assert.equal(progress['s3-endpoint'].correct, 3)
+  assert.equal(progress['s3-endpoint'].consecutiveCorrect, 3)
+  assert.equal(progress['s3-endpoint'].seenQuestionIds.length, 3)
+  assert.equal(progress['s3-endpoint'].correctVariantIds.length, 3)
+  assert.ok(progress['s3-endpoint'].mastery >= 0.85)
+})
+
+test('missed objectives stay in drill until three variants are correct', () => {
+  const sessionQuestions = [1, 2, 3, 4].map(variant =>
+    createSessionQuestion({ ...makeQuestion(variant, 'Secure Architectures'), objectiveId: 's3-endpoint', variant }, () => 0),
+  )
+  const afterMiss = updateObjectiveProgress({}, [sessionQuestions[0]], {}, '2026-07-19T00:00:00.000Z')
+  const oneCorrectAnswer = { [sessionQuestions[1].id]: sessionQuestions[1].answers }
+  const afterOneCorrect = updateObjectiveProgress(afterMiss, [sessionQuestions[1]], oneCorrectAnswer, '2026-07-19T00:00:00.000Z')
+  const remainingAnswers = Object.fromEntries(sessionQuestions.slice(2).map(question => [question.id, question.answers]))
+  const afterThreeCorrect = updateObjectiveProgress(afterOneCorrect, sessionQuestions.slice(2), remainingAnswers, '2026-07-19T00:00:00.000Z')
+  const drillSample = selectAdaptiveQuestions(sessionQuestions, afterOneCorrect, 2, { missedOnly: true, allowRepeatedObjectives: true }, () => 0)
+
+  assert.equal(afterMiss['s3-endpoint'].lastResult, 'incorrect')
+  assert.equal(afterMiss['s3-endpoint'].needsDrill, true)
+  assert.equal(afterOneCorrect['s3-endpoint'].lastResult, 'correct')
+  assert.equal(afterOneCorrect['s3-endpoint'].needsDrill, true)
+  assert.deepEqual(drillSample.map(question => question.objectiveId), ['s3-endpoint', 's3-endpoint'])
+  assert.equal(afterThreeCorrect['s3-endpoint'].correctVariantIds.length, 3)
+  assert.equal(afterThreeCorrect['s3-endpoint'].needsDrill, false)
 })
 
 test('getCorrectPositionDistribution reports displayed correct positions', () => {
@@ -166,13 +301,39 @@ test('sampleWeighted returns a 65-question blueprint-weighted exam when enough q
   })
 })
 
+test('sampleWeighted does not repeat objectives when variants are available', () => {
+  const questions = Object.keys(DOMAIN_META).flatMap((domain, domainIndex) =>
+    Array.from({ length: 10 }, (_, objectiveIndex) =>
+      Array.from({ length: 3 }, (_, variantIndex) => ({
+        ...makeQuestion(domainIndex * 100 + objectiveIndex * 10 + variantIndex, domain),
+        objectiveId: `${domain}-objective-${objectiveIndex}`,
+        variant: variantIndex + 1,
+      })),
+    ).flat(),
+  )
+
+  const sample = sampleWeighted(questions, 20)
+
+  assert.equal(sample.length, 20)
+  assert.equal(new Set(sample.map(question => question.objectiveId)).size, sample.length)
+})
+
 test('validateQuestionSets requires 10 blueprint-aligned sets of 10 questions', () => {
-  const questions = [
-    ...Array.from({ length: 3 }, (_, index) => makeQuestion(index + 1, 'Secure Architectures')),
-    ...Array.from({ length: 3 }, (_, index) => makeQuestion(index + 4, 'Resilient Architectures')),
-    ...Array.from({ length: 2 }, (_, index) => makeQuestion(index + 7, 'High-Performing Architectures')),
-    ...Array.from({ length: 2 }, (_, index) => makeQuestion(index + 9, 'Cost-Optimized Architectures')),
+  const domains = [
+    'Secure Architectures',
+    'Resilient Architectures',
+    'High-Performing Architectures',
+    'Cost-Optimized Architectures',
+    'Secure Architectures',
+    'Resilient Architectures',
+    'High-Performing Architectures',
+    'Cost-Optimized Architectures',
+    'Secure Architectures',
+    'Resilient Architectures',
   ]
+  const questions = domains.map((domain, index) =>
+    makeQuestion(index + 1, domain, PRACTICE_RESPONSE_PATTERN[index]),
+  )
   const questionSets = Array.from({ length: 10 }, (_, index) => ({
     id: `set-${index + 1}`,
     name: `Set ${index + 1}`,

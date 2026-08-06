@@ -1,96 +1,135 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import { questions, questionSets } from './questionSets.js'
+import { fullLengthExams, questions, questionSets } from './questionSets.js'
+import { proPracticeQuestions } from './proPracticeBank.js'
+import { examBankQuestions } from './examBank.js'
 import {
   DOMAIN_META,
+  EXAM_DOMAIN_COUNTS,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_PATTERN,
   answerMatches,
   createSessionQuestion,
-  getCorrectPositionDistribution,
+  validateFullLengthExams,
   validateQuestionSets,
 } from '../quizLogic.js'
 
-const qaReport = JSON.parse(
-  fs.readFileSync(new URL('../../aws-saa-c03-phase1-4/QA_REPORT.json', import.meta.url), 'utf8'),
-)
+const expectedOptionCount = { 1: 4, 2: 5, 3: 6 }
 
-test('question bank imports the complete phase 1-4 handoff bank', () => {
-  assert.equal(questions.length, qaReport.variant_question_count)
-  assert.equal(new Set(questions.map(question => question.objectiveId)).size, qaReport.objective_count)
-  assert.equal(questionSets.length, 10)
-  assert.deepEqual(validateQuestionSets(questionSets, questions), [])
+function assertWellFormed(question, idPattern) {
+  assert.match(question.id, idPattern)
+  assert.ok(Object.hasOwn(DOMAIN_META, question.domain), `${question.id} has unsupported domain`)
+  assert.match(question.difficulty, /^(Hard|Medium)$/, `${question.id} must be senior-level difficulty`)
+  assert.ok(question.question.length > 200, `${question.id} should be a concrete scenario stem`)
+  assert.ok(question.intentGroup.length > 3, `${question.id} needs an intent group`)
+  assert.equal(question.options.length, expectedOptionCount[question.correctOptionIds.length])
+  assert.equal(question.type, question.correctOptionIds.length > 1 ? 'multiple' : 'single')
+  assert.deepEqual(question.answers, question.correctOptionIds)
+  assert.deepEqual(
+    question.options.filter(option => option.correct).map(option => option.id),
+    question.correctOptionIds,
+  )
+  question.options.forEach(option => {
+    assert.ok(option.text.length > 20, `${question.id} option ${option.id} should be a substantive choice`)
+    assert.ok(option.explanation.length > 20, `${question.id} option ${option.id} needs an explanation`)
+  })
+  assert.ok(question.explanation.length > 40, `${question.id} needs a question-level explanation`)
+  assert.equal(answerMatches(question, question.correctOptionIds), true)
+  assert.equal(answerMatches(question, []), false)
+}
+
+test('the app bank is the hand-authored corpus only (generated bank retired)', () => {
+  assert.equal(proPracticeQuestions.length, 100)
+  assert.equal(examBankQuestions.length, 390)
+  assert.equal(questions.length, 490)
+  assert.equal(new Set(questions.map(question => question.id)).size, 490)
+  assert.ok(questions.every(question => /^(PRO|EX)-/.test(question.id)), 'no generated questions should remain')
 })
 
-test('questions preserve objective, variant, adaptive, and answer metadata', () => {
-  const ids = new Set()
+test('pro practice bank questions are well-formed', () => {
+  proPracticeQuestions.forEach(question => assertWellFormed(question, /^PRO-\d{3}$/))
+  const hardCount = proPracticeQuestions.filter(question => question.difficulty === 'Hard').length
+  assert.ok(hardCount >= 60, 'practice bank should stay predominantly Hard')
+})
+
+test('exam bank questions are well-formed', () => {
+  examBankQuestions.forEach(question => assertWellFormed(question, /^EX-[SRPC]\d-\d{2}$/))
+  const hardCount = examBankQuestions.filter(question => question.difficulty === 'Hard').length
+  assert.ok(hardCount >= 234, 'exam bank should stay predominantly Hard')
+})
+
+test('intents are unique across the entire corpus — no sibling or same-intent questions', () => {
+  const intents = questions.map(question => question.intentGroup)
+  assert.equal(new Set(intents).size, questions.length)
+})
+
+test('practice sets follow the blueprint pattern with unique intents and services per set', () => {
+  assert.deepEqual(validateQuestionSets(questionSets, questions), [])
+  const byId = new Map(questions.map(question => [question.id, question]))
+
+  questionSets.forEach((set, setIndex) => {
+    const setQuestions = set.questionIds.map(id => byId.get(id))
+    const intents = new Set()
+    const services = new Set()
+
+    setQuestions.forEach((question, slotIndex) => {
+      assert.match(question.id, /^PRO-\d{3}$/, `${set.name} should draw from the pro bank`)
+      assert.equal(question.practiceSet, setIndex + 1)
+      assert.equal(question.domain, PRACTICE_DOMAIN_PATTERN[slotIndex])
+      assert.equal(question.correctOptionIds.length, PRACTICE_RESPONSE_PATTERN[slotIndex])
+      assert.ok(!intents.has(question.intentGroup), `${set.name} repeats intent ${question.intentGroup}`)
+      intents.add(question.intentGroup)
+      services.add(question.service)
+    })
+    assert.equal(services.size, setQuestions.length, `${set.name} should spread services`)
+  })
+})
+
+test('full-length exam forms follow the exam guide distribution without reuse', () => {
+  assert.deepEqual(validateFullLengthExams(fullLengthExams, questions), [])
+  const byId = new Map(questions.map(question => [question.id, question]))
+  const allIds = fullLengthExams.flatMap(exam => exam.questionIds)
+  assert.equal(allIds.length, 390)
+  assert.equal(new Set(allIds).size, 390, 'no question may repeat across forms')
+
+  fullLengthExams.forEach(exam => {
+    const examQuestions = exam.questionIds.map(id => byId.get(id))
+    const domainCounts = examQuestions.reduce((counts, question) => ({
+      ...counts,
+      [question.domain]: (counts[question.domain] || 0) + 1,
+    }), {})
+    assert.deepEqual(domainCounts, EXAM_DOMAIN_COUNTS)
+    assert.ok(examQuestions.every(question => /^EX-/.test(question.id)), `${exam.name} should draw from the exam bank`)
+    assert.ok(examQuestions.some(question => question.correctOptionIds.length === 2))
+    assert.ok(examQuestions.some(question => question.correctOptionIds.length === 3))
+    const intents = examQuestions.map(question => question.intentGroup)
+    assert.equal(new Set(intents).size, intents.length, `${exam.name} repeats an intent`)
+  })
+})
+
+test('answer-format tells cannot game the bank', () => {
+  const singles = questions.filter(question => question.correctOptionIds.length === 1)
+  let longestWins = 0
+  let shortestWins = 0
+  let mixedPunctuation = 0
 
   questions.forEach(question => {
-    ids.add(question.id)
-    assert.ok(Object.hasOwn(DOMAIN_META, question.domain), `${question.id} has unsupported domain`)
-    assert.match(question.difficulty, /^(Easy|Medium|Hard)$/)
-    assert.match(question.type, /^(single|multiple)$/)
-    assert.ok(question.question.length > 80, `${question.id} should be scenario-based`)
-    assert.match(question.objectiveId, /^SAA-\d{3}$/)
-    assert.ok(question.objectiveName.length > 10, `${question.id} should have an objective name`)
-    assert.ok(question.variant >= 1 && question.variant <= 5, `${question.id} should keep its variant number`)
-    assert.equal(question.options.length, 4, `${question.id} should have four options`)
-    assert.equal(question.correctOptionIds.length, 1, `${question.id} should have one correct option`)
-    assert.deepEqual(question.answers, question.correctOptionIds)
-    assert.ok(question.explanation.length > 20, `${question.id} should explain the answer`)
-    assert.equal(question.services.length, 1, `${question.id} should preserve the service`)
-    assert.equal(question.adaptive.minimumCorrectVariantsForMastery, 2)
-    assert.equal(question.adaptive.masteryWeightOnMiss, 2)
-    assert.equal(question.adaptive.masteryWeightOnCorrect, 0.65)
-
-    const optionCorrectIds = question.options
-      .filter(option => option.correct)
-      .map(option => option.id)
-
-    assert.deepEqual(optionCorrectIds, question.correctOptionIds)
-    question.options.forEach(option => {
-      assert.ok(option.id, `${question.id} option should keep an id`)
-      assert.ok(option.text.length > 5, `${question.id} option should keep text`)
-      assert.ok(option.explanation.length > 20, `${question.id} option should keep an explanation`)
-    })
-    assert.equal(answerMatches(question, question.correctOptionIds), true)
-    assert.equal(answerMatches(question, []), false)
+    const punctuation = new Set(question.options.map(option => option.text.trim().endsWith('.')))
+    if (punctuation.size > 1) mixedPunctuation += 1
+  })
+  singles.forEach(question => {
+    const sorted = [...question.options].sort((a, b) => b.text.length - a.text.length)
+    if (sorted[0].correct) longestWins += 1
+    if (sorted[sorted.length - 1].correct) shortestWins += 1
   })
 
-  assert.equal(ids.size, questions.length)
+  assert.ok(longestWins / singles.length < 0.45, `"pick the longest" scores ${(100 * longestWins / singles.length).toFixed(1)}%`)
+  assert.ok(shortestWins / singles.length < 0.45, `"pick the shortest" scores ${(100 * shortestWins / singles.length).toFixed(1)}%`)
+  assert.equal(mixedPunctuation, 0, 'options within a question must share one punctuation convention')
 })
 
-test('each objective has exactly five variants', () => {
-  const variantsByObjective = questions.reduce((map, question) => {
-    const variants = map.get(question.objectiveId) || new Set()
-    variants.add(question.variant)
-    map.set(question.objectiveId, variants)
-    return map
-  }, new Map())
-
-  variantsByObjective.forEach((variants, objectiveId) => {
-    assert.deepEqual([...variants].sort(), [1, 2, 3, 4, 5], `${objectiveId} should have five variants`)
-  })
-})
-
-test('domain, difficulty, and answer-position distributions match the QA report', () => {
-  const domainDistribution = questions.reduce((distribution, question) => {
-    const shortDomain = DOMAIN_META[question.domain].short
-    distribution[shortDomain] = (distribution[shortDomain] || 0) + 1
-    return distribution
-  }, {})
-  const difficultyDistribution = questions.reduce((distribution, question) => {
-    distribution[question.difficulty] = (distribution[question.difficulty] || 0) + 1
-    return distribution
-  }, {})
-
-  assert.deepEqual(domainDistribution, qaReport.domain_distribution)
-  assert.deepEqual(difficultyDistribution, qaReport.difficulty_distribution)
-  assert.deepEqual(getCorrectPositionDistribution(questions), qaReport.correct_answer_position_distribution)
-})
-
-test('session shuffling keeps generated correct option ids answerable', () => {
+test('session shuffling keeps correct option ids answerable', () => {
   const sessionQuestion = createSessionQuestion(questions[0], () => 0.42)
-
   assert.equal(sessionQuestion.options.length, 4)
   assert.equal(answerMatches(sessionQuestion, sessionQuestion.answers), true)
   assert.equal(new Set(sessionQuestion.options.map(option => option.id)).size, 4)

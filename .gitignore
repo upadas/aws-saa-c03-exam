@@ -1,5 +1,9 @@
 node_modules/
 dist/
+db/generated/
+.env
+.env.local
+.env.*.local
 .superpowers/
 .DS_Store
 npm-debug.log*

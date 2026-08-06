@@ -1,0 +1,287 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  fullLengthExams,
+  generatedBankQuestions,
+  questions,
+  questionSets,
+} from '../src/data/questionSets.js'
+import { proPracticeQuestions } from '../src/data/proPracticeBank.js'
+import {
+  DOMAIN_META,
+  EXAM_DOMAIN_COUNTS,
+  EXAM_DURATION_SECONDS,
+  PRACTICE_DOMAIN_PATTERN,
+  validateFullLengthExams,
+  validateQuestionSets,
+} from '../src/quizLogic.js'
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const defaultOutput = path.join(repoRoot, 'db/generated/question-bank-seed.sql')
+const args = new Set(process.argv.slice(2))
+const outputArg = process.argv.find(arg => arg.startsWith('--out='))
+const outputPath = outputArg ? path.resolve(repoRoot, outputArg.slice('--out='.length)) : defaultOutput
+const checkOnly = args.has('--check')
+
+function sql(value) {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'number') return String(value)
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  return `'${String(value).replaceAll("'", "''")}'`
+}
+
+function sqlJson(value) {
+  return `${sql(JSON.stringify(value))}::jsonb`
+}
+
+function sqlTextArray(values = []) {
+  return `ARRAY[${values.map(sql).join(', ')}]::text[]`
+}
+
+function rowsToInsert(table, columns, rows, chunkSize = 100) {
+  if (!rows.length) return []
+
+  const chunks = []
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize)
+    chunks.push([
+      `insert into public.${table} (${columns.join(', ')}) values`,
+      chunk.map(row => `  (${row.join(', ')})`).join(',\n'),
+      ';',
+    ].join('\n'))
+  }
+  return chunks
+}
+
+function practiceCountForDomain(domain) {
+  return PRACTICE_DOMAIN_PATTERN.filter(item => item === domain).length
+}
+
+function domainRows() {
+  return Object.entries(DOMAIN_META).map(([domain, meta]) => [
+    sql(domain),
+    sql(meta.short),
+    sql(meta.weight),
+    sql(EXAM_DOMAIN_COUNTS[domain]),
+    sql(practiceCountForDomain(domain)),
+  ])
+}
+
+function objectiveRows() {
+  return [...questions.reduce((map, question) => {
+    if (!map.has(question.objectiveId)) {
+      map.set(question.objectiveId, [
+        sql(question.objectiveId),
+        sql(question.objectiveName),
+        sql(question.domain),
+        sql(question.service),
+        sql(question.trigger),
+        sql(question.sourceDomain),
+      ])
+    }
+    return map
+  }, new Map()).values()]
+}
+
+function questionRows() {
+  return questions.map(question => [
+    sql(question.id),
+    sql(question.objectiveId),
+    sql(question.variant),
+    sql(question.domain),
+    sql(question.service),
+    sql(question.difficulty),
+    sql(question.type),
+    sql(question.question),
+    sql(question.answerSummary),
+    sql(question.explanation),
+    sql(question.trigger),
+    sqlTextArray(question.services),
+    sqlTextArray(question.tags),
+    sql(question.sourceDomain),
+    sqlTextArray(question.sourceCorrectOptionIds),
+    sqlJson(question.adaptive),
+  ])
+}
+
+function optionRows() {
+  return questions.flatMap(question => question.options.map((option, index) => [
+    sql(question.id),
+    sql(option.id),
+    sql(index + 1),
+    sql(option.originalIndex ?? index),
+    sql(option.text),
+    sql(Boolean(option.correct)),
+    sql(option.explanation),
+  ]))
+}
+
+function practiceSetRows() {
+  return questionSets.map(set => [
+    sql(set.id),
+    sql(set.name),
+    sql(set.description),
+    sql(set.questionIds.length),
+  ])
+}
+
+function practiceSetQuestionRows() {
+  return questionSets.flatMap(set => set.questionIds.map((questionId, index) => [
+    sql(set.id),
+    sql(questionId),
+    sql(index + 1),
+  ]))
+}
+
+function examFormRows() {
+  return fullLengthExams.map(exam => [
+    sql(exam.id),
+    sql(exam.name),
+    sql(exam.description),
+    sql(exam.questionIds.length),
+    sql(EXAM_DURATION_SECONDS),
+  ])
+}
+
+function examFormQuestionRows() {
+  return fullLengthExams.flatMap(exam => exam.questionIds.map((questionId, index) => [
+    sql(exam.id),
+    sql(questionId),
+    sql(index + 1),
+  ]))
+}
+
+function validateExport() {
+  const issues = [
+    ...validateQuestionSets(questionSets, questions),
+    ...validateFullLengthExams(fullLengthExams, questions),
+  ]
+
+  if (generatedBankQuestions.length !== 1250) {
+    issues.push(`Expected 1250 generated questions, found ${generatedBankQuestions.length}.`)
+  }
+
+  if (proPracticeQuestions.length !== 100) {
+    issues.push(`Expected 100 pro practice questions, found ${proPracticeQuestions.length}.`)
+  }
+
+  if (questions.length !== generatedBankQuestions.length + proPracticeQuestions.length) {
+    issues.push(`Expected ${generatedBankQuestions.length + proPracticeQuestions.length} total questions, found ${questions.length}.`)
+  }
+
+  if (new Set(generatedBankQuestions.map(question => question.objectiveId)).size !== 250) {
+    issues.push('Expected 250 generated objectives.')
+  }
+
+  return issues
+}
+
+function buildSeedSql() {
+  const statements = [
+    '-- Generated by npm run db:export. Apply db/schema.sql before this seed.',
+    `-- Questions: ${questions.length}`,
+    `-- Practice sets: ${questionSets.length}`,
+    `-- Full-length exams: ${fullLengthExams.length}`,
+    'begin;',
+    'delete from public.saa_exam_form_questions;',
+    'delete from public.saa_exam_forms;',
+    'delete from public.saa_practice_set_questions;',
+    'delete from public.saa_practice_sets;',
+    'delete from public.saa_question_options;',
+    'delete from public.saa_questions;',
+    'delete from public.saa_objectives;',
+    'delete from public.saa_domains;',
+    ...rowsToInsert(
+      'saa_domains',
+      ['domain_id', 'short_name', 'exam_weight', 'exam_question_count', 'practice_question_count'],
+      domainRows(),
+    ),
+    ...rowsToInsert(
+      'saa_objectives',
+      ['objective_id', 'objective_name', 'domain_id', 'service', 'trigger', 'source_domain'],
+      objectiveRows(),
+    ),
+    ...rowsToInsert(
+      'saa_questions',
+      [
+        'question_id',
+        'objective_id',
+        'variant',
+        'domain_id',
+        'service',
+        'difficulty',
+        'response_type',
+        'prompt',
+        'answer_summary',
+        'explanation',
+        'trigger',
+        'services',
+        'tags',
+        'source_domain',
+        'source_correct_option_ids',
+        'adaptive',
+      ],
+      questionRows(),
+      50,
+    ),
+    ...rowsToInsert(
+      'saa_question_options',
+      ['question_id', 'option_id', 'display_order', 'original_index', 'option_text', 'is_correct', 'explanation'],
+      optionRows(),
+      100,
+    ),
+    ...rowsToInsert(
+      'saa_practice_sets',
+      ['set_id', 'name', 'description', 'question_count'],
+      practiceSetRows(),
+    ),
+    ...rowsToInsert(
+      'saa_practice_set_questions',
+      ['set_id', 'question_id', 'position'],
+      practiceSetQuestionRows(),
+    ),
+    ...rowsToInsert(
+      'saa_exam_forms',
+      ['exam_id', 'name', 'description', 'question_count', 'duration_seconds'],
+      examFormRows(),
+    ),
+    ...rowsToInsert(
+      'saa_exam_form_questions',
+      ['exam_id', 'question_id', 'position'],
+      examFormQuestionRows(),
+    ),
+    'commit;',
+    '',
+  ]
+
+  return statements.join('\n\n')
+}
+
+const issues = validateExport()
+if (issues.length) {
+  console.error(issues.join('\n'))
+  process.exit(1)
+}
+
+const summary = {
+  questions: questions.length,
+  generatedQuestions: generatedBankQuestions.length,
+  proPracticeQuestions: proPracticeQuestions.length,
+  objectives: new Set(questions.map(question => question.objectiveId)).size,
+  generatedObjectives: new Set(generatedBankQuestions.map(question => question.objectiveId)).size,
+  practiceSets: questionSets.length,
+  fullLengthExams: fullLengthExams.length,
+  fullLengthExamQuestions: fullLengthExams.flatMap(exam => exam.questionIds).length,
+  uniqueFullLengthExamQuestions: new Set(fullLengthExams.flatMap(exam => exam.questionIds)).size,
+}
+
+if (checkOnly) {
+  console.log(JSON.stringify(summary, null, 2))
+  process.exit(0)
+}
+
+fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+fs.writeFileSync(outputPath, buildSeedSql())
+console.log(`Wrote ${path.relative(repoRoot, outputPath)}`)
+console.log(JSON.stringify(summary, null, 2))

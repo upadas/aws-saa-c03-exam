@@ -5,11 +5,12 @@ import {
   ChevronRight, Cloud, Flag, LayoutDashboard, ListChecks, RotateCcw, Search,
   ShieldCheck, Sparkles, Target, Timer, XCircle,
 } from 'lucide-react'
-import { questions, questionSets } from './data/questionSets'
+import { loadQuestionBank } from './data/questionBankSource'
 import {
   DOMAIN_META,
   EXAM_DURATION_SECONDS,
-  EXAM_QUESTION_COUNT,
+  PRACTICE_DOMAIN_PATTERN,
+  PRACTICE_RESPONSE_PATTERN,
   answerMatches,
   buildQuestionReview,
   buildSessionResult,
@@ -22,11 +23,14 @@ import {
 } from './quizLogic'
 import './styles.css'
 
+const storageSchemaVersion = 3
+const questionBankVersion = 'saa-c03-hand-authored-490-v5'
 const storageKey = 'saa-c03-progress-v2'
 const legacyStorageKey = 'saa-c03-progress-v1'
 
 const defaultSaved = {
-  schemaVersion: 2,
+  schemaVersion: storageSchemaVersion,
+  questionBankVersion,
   attempts: [],
   mastered: [],
   objectiveProgress: {},
@@ -34,16 +38,39 @@ const defaultSaved = {
   activeSession: null,
 }
 
+function allowsRepeatedObjectives(session) {
+  return session?.mode === 'missed' || session?.mode === 'objective'
+}
+
+function hasRepeatedObjectives(session) {
+  if (!session?.questions?.length || allowsRepeatedObjectives(session)) return false
+  const seen = new Set()
+
+  return session.questions.some(question => {
+    const objectiveId = question.objectiveId || question.id
+    if (seen.has(objectiveId)) return true
+    seen.add(objectiveId)
+    return false
+  })
+}
+
 function normalizeSaved(value) {
+  const isCompatible = value?.schemaVersion === storageSchemaVersion &&
+    value?.questionBankVersion === questionBankVersion
+  const activeSession = isCompatible && !hasRepeatedObjectives(value?.activeSession)
+    ? value?.activeSession || null
+    : null
+
   return {
     ...defaultSaved,
     ...(value || {}),
-    schemaVersion: 2,
+    schemaVersion: storageSchemaVersion,
+    questionBankVersion,
     attempts: Array.isArray(value?.attempts) ? value.attempts : [],
     mastered: Array.isArray(value?.mastered) ? value.mastered : [],
     objectiveProgress: value?.objectiveProgress || {},
     completedSessions: Array.isArray(value?.completedSessions) ? value.completedSessions : [],
-    activeSession: value?.activeSession || null,
+    activeSession,
   }
 }
 
@@ -59,8 +86,36 @@ function loadSaved() {
   return defaultSaved
 }
 
+function progressSeenQuestionIds(objectiveProgress = {}) {
+  return [...new Set(Object.values(objectiveProgress).flatMap(item => item.seenQuestionIds || []))]
+}
+
+function progressSeenObjectiveIds(objectiveProgress = {}) {
+  return Object.values(objectiveProgress)
+    .filter(item => item.attempts)
+    .map(item => item.objectiveId)
+    .filter(Boolean)
+}
+
+function recentQuestionIdsFromSessions(saved, activeSession, sessionLimit = 8) {
+  const activeIds = activeSession?.questionIds || activeSession?.questions?.map(question => question.id) || []
+  const completedIds = (saved.completedSessions || [])
+    .slice(0, sessionLimit)
+    .flatMap(item => item.questionIds || [])
+
+  return [...new Set([...activeIds, ...completedIds])]
+}
+
+function objectiveIdsForQuestionIds(questionIds, questionById) {
+  return [...new Set(questionIds
+    .map(id => questionById.get(id)?.objectiveId)
+    .filter(Boolean))]
+}
+
 function App() {
   const [initialSaved] = useState(loadSaved)
+  const [bank, setBank] = useState(null)
+  const [bankStatus, setBankStatus] = useState('loading')
   const [view, setView] = useState(() => (
     initialSaved.activeSession?.result ? 'result' : initialSaved.activeSession ? 'quiz' : 'dashboard'
   ))
@@ -72,13 +127,30 @@ function App() {
   const [progressFilter, setProgressFilter] = useState('All')
   const [session, setSession] = useState(() => initialSaved.activeSession)
   const [saved, setSaved] = useState(() => initialSaved)
+  const questions = bank?.questions || []
+  const questionSets = bank?.questionSets || []
+  const fullLengthExams = bank?.fullLengthExams || []
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ ...saved, activeSession: session }))
   }, [saved, session])
 
-  const questionById = useMemo(() => new Map(questions.map(question => [question.id, question])), [])
-  const objectiveCount = useMemo(() => new Set(questions.map(question => question.objectiveId)).size, [])
+  useEffect(() => {
+    let cancelled = false
+
+    loadQuestionBank().then(loadedBank => {
+      if (cancelled) return
+      setBank(loadedBank)
+      setBankStatus(loadedBank.source)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const questionById = useMemo(() => new Map(questions.map(question => [question.id, question])), [questions])
+  const objectiveCount = useMemo(() => new Set(questions.map(question => question.objectiveId)).size, [questions])
   const mastered = new Set(saved.mastered)
   const objectiveProgress = saved.objectiveProgress || {}
   const progressList = Object.values(objectiveProgress)
@@ -87,22 +159,48 @@ function App() {
     ? Math.round(saved.attempts.reduce((sum, attempt) => sum + attempt.correct / attempt.total * 100, 0) / saved.attempts.length)
     : 0
   const weakObjectives = progressList
-    .filter(item => item.attempts && (item.lastResult === 'incorrect' || item.mastery < 0.65))
+    .filter(item => item.attempts && (item.needsDrill || item.lastResult === 'incorrect' || item.mastery < 0.65))
     .sort((a, b) => (a.mastery || 0) - (b.mastery || 0))
     .slice(0, 4)
   const masteredObjectives = progressList.filter(item => item.mastery >= 0.85).length
 
   const startQuiz = (mode, count = 10, domain = 'All', questionList = null, options = {}) => {
     let list = questionList
+    const seenQuestionIds = progressSeenQuestionIds(objectiveProgress)
+    const recentQuestionIds = recentQuestionIdsFromSessions(saved, session)
+    const memoryFilters = {
+      avoidQuestionIds: seenQuestionIds,
+      avoidObjectiveIds: progressSeenObjectiveIds(objectiveProgress),
+      recentQuestionIds,
+      recentObjectiveIds: objectiveIdsForQuestionIds(recentQuestionIds, questionById),
+    }
 
     if (!list && mode === 'exam') {
       list = sampleWeighted(questions, Math.min(count, questions.length))
     } else if (!list && mode === 'missed') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { missedOnly: true })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        missedOnly: true,
+        allowRepeatedObjectives: true,
+        boostDrill: true,
+        avoidQuestionIds: seenQuestionIds,
+        recentQuestionIds,
+      })
     } else if (!list && mode === 'objective') {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { objectiveIds: options.objectiveIds || [] })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        objectiveIds: options.objectiveIds || [],
+        allowRepeatedObjectives: true,
+        boostDrill: true,
+        avoidQuestionIds: seenQuestionIds,
+        recentQuestionIds,
+      })
     } else if (!list) {
-      list = selectAdaptiveQuestions(questions, objectiveProgress, count, { domain })
+      list = selectAdaptiveQuestions(questions, objectiveProgress, count, {
+        ...memoryFilters,
+        domain,
+        domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
+        responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+        boostDrill: false,
+      })
     }
 
     const sessionQuestions = createSessionQuestions(list)
@@ -127,8 +225,12 @@ function App() {
   }
 
   const startQuestionSet = set => {
-    const list = set.questionIds.map(id => questionById.get(id)).filter(Boolean)
-    startQuiz('set', list.length, 'All', list, { setId: set.id, title: set.name })
+    startQuiz('set', set.questionIds.length, 'All', null, { setId: set.id, title: set.name })
+  }
+
+  const startExamForm = exam => {
+    const list = exam.questionIds.map(id => questionById.get(id)).filter(Boolean)
+    startQuiz('exam', list.length, 'All', list, { setId: exam.id, title: exam.name })
   }
 
   const finishQuiz = () => {
@@ -147,10 +249,20 @@ function App() {
     setView('result')
   }
 
+  if (!bank) {
+    return <div className="app-shell">
+      <Header view={view} setView={setView} questionCount={0} bankStatus={bankStatus} />
+      <main><LoadingBank /></main>
+    </div>
+  }
+
   return <div className="app-shell">
-    <Header view={view} setView={setView} questionCount={questions.length} />
+    <Header view={view} setView={setView} questionCount={questions.length} bankStatus={bankStatus} />
     <main>
       {view === 'dashboard' && <Dashboard
+        questions={questions}
+        questionSets={questionSets}
+        fullLengthExams={fullLengthExams}
         avg={avg}
         latest={latest}
         attempts={saved.attempts.length}
@@ -160,8 +272,10 @@ function App() {
         weakObjectives={weakObjectives}
         startQuiz={startQuiz}
         startQuestionSet={startQuestionSet}
+        startExamForm={startExamForm}
       />}
       {view === 'bank' && <QuestionBank
+        questions={questions}
         query={bankQuery}
         setQuery={setBankQuery}
         domain={domainFilter}
@@ -194,7 +308,9 @@ function modeTitle(mode, domain) {
   return 'Quick adaptive practice'
 }
 
-function Header({ view, setView, questionCount }) {
+function Header({ view, setView, questionCount, bankStatus }) {
+  const sourceLabel = bankStatus === 'supabase' ? 'Supabase' : bankStatus === 'local' ? 'Local bank' : 'Loading'
+
   return <header className="topbar">
     <button className="brand" onClick={() => setView('dashboard')}>
       <span className="brand-mark"><Cloud size={23}/></span>
@@ -204,11 +320,24 @@ function Header({ view, setView, questionCount }) {
       <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={17}/> Dashboard</button>
       <button className={view === 'bank' ? 'active' : ''} onClick={() => setView('bank')}><BookOpen size={17}/> Question bank</button>
     </nav>
-    <div className="exam-pill"><span></span> {questionCount} original questions</div>
+    <div className="exam-pill"><span></span> {questionCount || '...'} original questions / {sourceLabel}</div>
   </header>
 }
 
+function LoadingBank() {
+  return <div className="page loading-page">
+    <div className="loading-panel">
+      <span className="loading-mark"><Cloud size={28}/></span>
+      <strong>Loading question bank</strong>
+      <p>Preparing the SAA-C03 practice cockpit.</p>
+    </div>
+  </div>
+}
+
 function Dashboard({
+  questions,
+  questionSets,
+  fullLengthExams,
   avg,
   latest,
   attempts,
@@ -218,6 +347,7 @@ function Dashboard({
   weakObjectives,
   startQuiz,
   startQuestionSet,
+  startExamForm,
 }) {
   const latestPct = latest ? Math.round(latest.correct / latest.total * 100) : null
   const readiness = attempts ? Math.min(avg, 100) : Math.round(masteredObjectives / Math.max(objectiveCount, 1) * 100)
@@ -232,7 +362,7 @@ function Dashboard({
           <small>{attempts ? `${avg}% average across ${attempts} attempt${attempts > 1 ? 's' : ''}` : 'Complete a session to calibrate'}</small>
         </div>
         <div className="rail-list">
-          <button onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={16}/><span>Full exam</span><b>130m</b></button>
+          <button onClick={() => startExamForm(fullLengthExams[0])}><Timer size={16}/><span>Exam Form 1</span><b>130m</b></button>
           <button onClick={() => startQuiz('practice', 10)}><Target size={16}/><span>Quick practice</span><b>10q</b></button>
           <button onClick={() => startQuiz('missed', 10)}><ListChecks size={16}/><span>Missed concepts</span><b>10q</b></button>
           <button onClick={() => startQuiz('practice', 10, 'Resilient Architectures')}><ShieldCheck size={16}/><span>Resilience drill</span><b>10q</b></button>
@@ -248,7 +378,7 @@ function Dashboard({
             <p>{questions.length} original SAA-C03-style questions mapped to {objectiveCount} objectives, with adaptive variants and a 65-question exam simulation.</p>
             <div className="hero-actions">
               <button className="primary" onClick={() => startQuestionSet(questionSets[0])}><Target size={19}/> Start Set 1 <ArrowRight size={18}/></button>
-              <button className="secondary" onClick={() => startQuiz('exam', EXAM_QUESTION_COUNT)}><Timer size={19}/> 65-question exam</button>
+              <button className="secondary" onClick={() => startExamForm(fullLengthExams[0])}><Timer size={19}/> Exam Form 1</button>
             </div>
           </div>
           <div className="score-tile">
@@ -278,17 +408,27 @@ function Dashboard({
             </article>
           )}
         </section>
+
+        <section className="set-grid">
+          {fullLengthExams.map((exam, index) =>
+            <article className="set-card" key={exam.id}>
+              <span>E{index + 1}</span>
+              <div><h3>{exam.name}</h3><p>{exam.description}</p></div>
+              <button onClick={() => startExamForm(exam)}>Start exam <ChevronRight size={16}/></button>
+            </article>
+          )}
+        </section>
       </section>
 
       <aside className="coach-panel">
         <div className="rail-label">Coach notes</div>
         <div className="coach-box">
           <h3>Adaptive engine</h3>
-          <p>Missed objectives get boosted, and the next attempt prefers a different variant before repeating exact wording.</p>
+          <p>Normal practice prioritizes unseen objectives. Missed concepts drills repeat the intent with fresh variants before any exact wording returns.</p>
         </div>
         <div className="coach-box">
           <h3>Progress</h3>
-          <p>{masteredQuestions} questions marked mastered. Objective mastery is tracked separately from manual overrides.</p>
+          <p>{masteredQuestions} questions marked mastered. Objective mastery now requires three correct variants and is tracked separately from manual overrides.</p>
         </div>
         <div className="coach-box">
           <h3>Weak objectives</h3>
@@ -304,6 +444,7 @@ function Dashboard({
 }
 
 function QuestionBank({
+  questions,
   query,
   setQuery,
   domain,
@@ -324,7 +465,7 @@ function QuestionBank({
   const [expandedIds, setExpandedIds] = useState([])
   const serviceOptions = useMemo(() => (
     [...new Set(questions.flatMap(question => question.services || []))].sort()
-  ), [])
+  ), [questions])
   const objectiveOptions = useMemo(() => (
     [...questions.reduce((map, question) => {
       if (!map.has(question.objectiveId)) {
@@ -338,7 +479,7 @@ function QuestionBank({
       return map
     }, new Map()).values()]
       .sort((a, b) => a.objectiveId.localeCompare(b.objectiveId))
-  ), [])
+  ), [questions])
   const filtered = questions.filter(question => {
     const state = objectiveProgress[question.objectiveId] || {}
     const isMastered = mastered.has(question.id) || (state.mastery || 0) >= 0.85
@@ -355,7 +496,14 @@ function QuestionBank({
       haystack.includes(query.toLowerCase())
   })
   const startFilteredPractice = () => {
-    const list = selectAdaptiveQuestions(filtered, objectiveProgress, Math.min(10, filtered.length))
+    const count = Math.min(10, filtered.length)
+    const list = selectAdaptiveQuestions(filtered, objectiveProgress, count, {
+      avoidQuestionIds: progressSeenQuestionIds(objectiveProgress),
+      avoidObjectiveIds: progressSeenObjectiveIds(objectiveProgress),
+      domainPattern: domain === 'All' && count === PRACTICE_DOMAIN_PATTERN.length ? PRACTICE_DOMAIN_PATTERN : null,
+      responsePattern: count === PRACTICE_RESPONSE_PATTERN.length ? PRACTICE_RESPONSE_PATTERN : null,
+      boostDrill: false,
+    })
     if (list.length) startQuiz('practice', list.length, domain, list, { title: 'Filtered adaptive practice' })
   }
   const toggleMastered = id => setSaved(prev => ({
@@ -396,7 +544,7 @@ function QuestionBank({
         return <article className="bank-item" key={question.id}>
           <div className="q-index">{String(question.id).padStart(2, '0')}</div>
           <div className="bank-main">
-            <div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.type === 'multiple' ? 'Choose 2' : 'Single answer'}</span></div>
+            <div className="tags"><span>{DOMAIN_META[question.domain].short}</span><span>{question.difficulty}</span><span>{question.type === 'multiple' ? `Choose ${question.answers.length}` : 'Single answer'}</span></div>
             <button className="bank-question" onClick={() => toggleExpanded(question.id)}>{question.question}</button>
             <div className="objective-name">{question.objectiveName}</div>
             <div className="service-list">{question.services.map(service => <span key={service}>{service}</span>)}</div>
@@ -447,6 +595,12 @@ function Quiz({ session, setSession, finishQuiz }) {
   })
   const go = index => setSession({ ...session, index })
   const answered = Object.keys(session.answers).filter(id => session.answers[id]?.length).length
+  const navigationStatus = item => {
+    const selectedAnswers = session.answers[item.id] || []
+    if (!session.checked[item.id] && !session.result) return ''
+    if (!selectedAnswers.length) return ''
+    return answerMatches(item, selectedAnswers) ? 'correct' : 'incorrect'
+  }
 
   return <div className="quiz-layout">
     <aside className="quiz-side">
@@ -455,9 +609,9 @@ function Quiz({ session, setSession, finishQuiz }) {
       <div className="progress-copy"><span>Progress</span><strong>{answered}/{session.questions.length}</strong></div>
       <div className="progress"><span style={{ width: `${answered / session.questions.length * 100}%` }}></span></div>
       <div className="navigator">
-        {session.questions.map((item, index) => <button key={item.id} onClick={() => go(index)} className={`${index === session.index ? 'current' : ''} ${session.answers[item.id]?.length ? 'answered' : ''} ${session.flagged.includes(item.id) ? 'flagged' : ''}`}>{index + 1}</button>)}
+        {session.questions.map((item, index) => <button key={item.id} onClick={() => go(index)} className={`${index === session.index ? 'current' : ''} ${session.answers[item.id]?.length ? 'answered' : ''} ${navigationStatus(item)} ${session.flagged.includes(item.id) ? 'flagged' : ''}`}>{index + 1}</button>)}
       </div>
-      <div className="legend"><span><i className="dot answered"></i>Answered</span><span><i className="dot flagged"></i>Flagged</span></div>
+      <div className="legend"><span><i className="dot correct"></i>Correct</span><span><i className="dot incorrect"></i>Incorrect</span><span><i className="dot flagged"></i>Flagged</span></div>
       <button className="end-btn" onClick={finishQuiz}>Finish session</button>
     </aside>
     <section className="question-panel">

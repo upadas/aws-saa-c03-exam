@@ -7,6 +7,30 @@ export const DOMAIN_META = {
 
 export const EXAM_QUESTION_COUNT = 65
 export const EXAM_DURATION_SECONDS = 130 * 60
+export const MIN_CORRECT_VARIANTS_FOR_MASTERY = 3
+export const EXAM_DOMAIN_COUNTS = {
+  'Secure Architectures': 20,
+  'Resilient Architectures': 17,
+  'High-Performing Architectures': 16,
+  'Cost-Optimized Architectures': 12,
+}
+export const PRACTICE_DOMAIN_PATTERN = [
+  'Secure Architectures',
+  'Resilient Architectures',
+  'High-Performing Architectures',
+  'Cost-Optimized Architectures',
+  'Secure Architectures',
+  'Resilient Architectures',
+  'High-Performing Architectures',
+  'Cost-Optimized Architectures',
+  'Secure Architectures',
+  'Resilient Architectures',
+]
+export const PRACTICE_RESPONSE_PATTERN = [1, 2, 1, 3, 1, 2, 1, 3, 2, 1]
+export const PRACTICE_RESPONSE_COUNTS = PRACTICE_RESPONSE_PATTERN.reduce((counts, answerCount) => ({
+  ...counts,
+  [answerCount]: (counts[answerCount] || 0) + 1,
+}), {})
 
 const SET_DOMAIN_COUNTS = {
   'Secure Architectures': 3,
@@ -44,6 +68,14 @@ function selectedToId(question, selected) {
 
 function variantKey(question) {
   return question.variant ? `${question.objectiveId || question.id}:variant-${question.variant}` : String(question.id)
+}
+
+function objectiveKey(question) {
+  return question.objectiveId || `question-${question.id}`
+}
+
+function responseCount(question) {
+  return correctOptionIds(question).length
 }
 
 export function getOptionRecords(question) {
@@ -132,55 +164,211 @@ export function buildQuestionReview(question, selected = []) {
 export function sampleWeighted(questions, count) {
   const domains = Object.keys(DOMAIN_META)
   const chosen = []
+  const selectedObjectives = new Set()
 
   domains.forEach((domain, index) => {
     const quota = index === domains.length - 1
       ? count - chosen.length
       : Math.round(count * DOMAIN_META[domain].weight / 100)
     const pool = shuffle(questions.filter(question => question.domain === domain))
-    chosen.push(...pool.slice(0, Math.min(quota, pool.length)))
+    const picked = []
+
+    for (const question of pool) {
+      const objectiveId = objectiveKey(question)
+      if (selectedObjectives.has(objectiveId)) continue
+      picked.push(question)
+      selectedObjectives.add(objectiveId)
+      if (picked.length === quota) break
+    }
+
+    chosen.push(...picked)
   })
 
   if (chosen.length < count) {
     const ids = new Set(chosen.map(question => question.id))
-    chosen.push(...shuffle(questions.filter(question => !ids.has(question.id))).slice(0, count - chosen.length))
+    const fallback = []
+
+    for (const question of shuffle(questions.filter(question => !ids.has(question.id)))) {
+      const objectiveId = objectiveKey(question)
+      if (selectedObjectives.has(objectiveId)) continue
+      fallback.push(question)
+      selectedObjectives.add(objectiveId)
+      if (fallback.length === count - chosen.length) break
+    }
+
+    chosen.push(...fallback)
   }
 
   return shuffle(chosen).slice(0, count)
 }
 
+function asSet(values = []) {
+  return values instanceof Set ? values : new Set(values || [])
+}
+
+function pickWeightedQuestion(candidates, progress, random, options = {}) {
+  const weighted = candidates.map(question => ({
+    question,
+    weight: adaptiveQuestionWeight(question, progress[question.objectiveId], options),
+  }))
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
+  let cursor = random() * totalWeight
+
+  for (let index = 0; index < weighted.length; index += 1) {
+    cursor -= weighted[index].weight
+    if (cursor <= 0) return weighted[index].question
+  }
+
+  return weighted[0]?.question
+}
+
+function interleaveByResponsePattern(selected, pattern) {
+  if (!pattern?.length) return selected
+
+  const groups = selected.reduce((map, question) => {
+    const key = responseCount(question)
+    const group = map.get(key) || []
+    group.push(question)
+    map.set(key, group)
+    return map
+  }, new Map())
+  const ordered = []
+
+  pattern.forEach(answerCount => {
+    const group = groups.get(answerCount)
+    const next = group?.shift()
+    if (next) ordered.push(next)
+  })
+
+  groups.forEach(group => ordered.push(...group))
+  return ordered
+}
+
+function avoidAdjacentObjectiveRepeats(selected) {
+  const remaining = [...selected]
+  const ordered = []
+
+  while (remaining.length) {
+    const previousObjective = ordered.length ? objectiveKey(ordered[ordered.length - 1]) : null
+    const nextIndex = remaining.findIndex(question => objectiveKey(question) !== previousObjective)
+    const safeIndex = nextIndex === -1 ? 0 : nextIndex
+    ordered.push(remaining.splice(safeIndex, 1)[0])
+  }
+
+  return ordered
+}
+
 export function selectAdaptiveQuestions(questions, progress = {}, count = 10, filters = {}, random = Math.random) {
+  const allowRepeatedObjectives = Boolean(filters.allowRepeatedObjectives)
+  const boostDrill = filters.boostDrill ?? Boolean(filters.missedOnly || filters.objectiveIds?.length || allowRepeatedObjectives)
+  const domainPattern = filters.domainPattern || null
+  const responsePattern = filters.responsePattern || null
+  const avoidQuestionIds = asSet(filters.avoidQuestionIds)
+  const avoidObjectiveIds = asSet(filters.avoidObjectiveIds)
+  const recentQuestionIds = asSet(filters.recentQuestionIds)
+  const recentObjectiveIds = asSet(filters.recentObjectiveIds)
+  const responseTargets = responsePattern?.reduce((counts, answerCount) => ({
+    ...counts,
+    [answerCount]: (counts[answerCount] || 0) + 1,
+  }), {})
   const eligible = questions.filter(question => {
     const domainMatch = !filters.domain || filters.domain === 'All' || question.domain === filters.domain
     const serviceMatch = !filters.service || filters.service === 'All' || question.services?.includes(filters.service) || question.service === filters.service
     const difficultyMatch = !filters.difficulty || filters.difficulty === 'All' || question.difficulty === filters.difficulty
     const objectiveMatch = !filters.objectiveIds?.length || filters.objectiveIds.includes(question.objectiveId)
-    const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect'
+    const missedMatch = !filters.missedOnly || progress[question.objectiveId]?.lastResult === 'incorrect' || progress[question.objectiveId]?.needsDrill
     const masteredMatch = !filters.masteredOnly || (progress[question.objectiveId]?.mastery || 0) >= 0.85
     return domainMatch && serviceMatch && difficultyMatch && objectiveMatch && missedMatch && masteredMatch
   })
   const remaining = [...eligible]
   const selected = []
+  const selectedObjectives = new Set()
+  const selectedServices = new Set()
+  const takeQuestion = question => {
+    selected.push(question)
+    selectedObjectives.add(objectiveKey(question))
+    selectedServices.add(question.service || question.services?.[0])
+    remaining.splice(remaining.indexOf(question), 1)
+  }
+  const availableCandidates = predicate => remaining.filter(question => (
+    predicate(question) && !selectedObjectives.has(objectiveKey(question))
+  ))
+  const freshnessTier = question => {
+    const objectiveId = objectiveKey(question)
+    const state = progress[objectiveId] || {}
+    const seenQuestionIds = new Set(state.seenQuestionIds || [])
+    const hasSeenExactQuestion = seenQuestionIds.has(question.id) || avoidQuestionIds.has(question.id)
+    const hasSeenObjective = Boolean(state.attempts) || avoidObjectiveIds.has(objectiveId)
+    const hasRecentExactQuestion = recentQuestionIds.has(question.id)
+    const hasRecentObjective = recentObjectiveIds.has(objectiveId)
+
+    if (!hasSeenExactQuestion && !hasSeenObjective && !hasRecentExactQuestion && !hasRecentObjective) return 0
+    if (!hasSeenExactQuestion && !hasRecentExactQuestion && !hasRecentObjective) return 1
+    if (!hasSeenExactQuestion && !hasRecentExactQuestion) return 2
+    if (!hasRecentExactQuestion) return 3
+    return 4
+  }
+  const preferFreshness = candidates => {
+    if (!candidates.length) return candidates
+    const bestTier = Math.min(...candidates.map(freshnessTier))
+    return candidates.filter(question => freshnessTier(question) === bestTier)
+  }
+  const preferServiceDiversity = candidates => {
+    const diverse = candidates.filter(question => !selectedServices.has(question.service || question.services?.[0]))
+    return diverse.length ? diverse : candidates
+  }
+  const preferredCandidates = candidates => preferServiceDiversity(preferFreshness(candidates))
+
+  if (
+    domainPattern?.length === count &&
+    responsePattern?.length === count &&
+    !allowRepeatedObjectives
+  ) {
+    domainPattern.forEach((domain, index) => {
+      const answerCount = responsePattern[index]
+      const candidates = [
+        () => availableCandidates(question => question.domain === domain && responseCount(question) === answerCount),
+        () => availableCandidates(question => question.domain === domain),
+        () => availableCandidates(question => responseCount(question) === answerCount),
+        () => availableCandidates(() => true),
+      ].map(factory => preferredCandidates(factory())).find(pool => pool.length)
+
+      if (candidates?.length) takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+        boostDrill,
+        avoidQuestionIds,
+        recentQuestionIds,
+      }))
+    })
+  }
+
+  if (responseTargets && !domainPattern && !allowRepeatedObjectives) {
+    Object.entries(responseTargets).forEach(([answerCount, target]) => {
+      while (selected.filter(question => responseCount(question) === Number(answerCount)).length < target) {
+        const candidates = preferredCandidates(availableCandidates(question => (
+          responseCount(question) === Number(answerCount)
+        )))
+        if (!candidates.length) break
+        takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+          boostDrill,
+          avoidQuestionIds,
+          recentQuestionIds,
+        }))
+      }
+    })
+  }
 
   while (selected.length < count && remaining.length) {
-    const weighted = remaining.map(question => ({
-      question,
-      weight: adaptiveQuestionWeight(question, progress[question.objectiveId]),
+    const candidates = allowRepeatedObjectives
+      ? preferFreshness(remaining)
+      : preferredCandidates(remaining.filter(question => !selectedObjectives.has(objectiveKey(question))))
+
+    if (!candidates.length) break
+
+    takeQuestion(pickWeightedQuestion(candidates, progress, random, {
+      boostDrill,
+      avoidQuestionIds,
+      recentQuestionIds,
     }))
-    const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0)
-    let cursor = random() * totalWeight
-    let chosenIndex = 0
-
-    for (let index = 0; index < weighted.length; index += 1) {
-      cursor -= weighted[index].weight
-      if (cursor <= 0) {
-        chosenIndex = index
-        break
-      }
-    }
-
-    selected.push(weighted[chosenIndex].question)
-    remaining.splice(chosenIndex, 1)
   }
 
   if (selected.length < count && filters.missedOnly) {
@@ -196,30 +384,39 @@ export function selectAdaptiveQuestions(questions, progress = {}, count = 10, fi
     )
   }
 
-  return selected
+  return avoidAdjacentObjectiveRepeats(
+    interleaveByResponsePattern(selected, responsePattern),
+  ).slice(0, count)
 }
 
-export function adaptiveQuestionWeight(question, objectiveProgress = {}) {
+export function adaptiveQuestionWeight(question, objectiveProgress = {}, options = {}) {
+  const boostDrill = options.boostDrill ?? true
   const seenQuestionIds = new Set(objectiveProgress.seenQuestionIds || [])
+  const avoidQuestionIds = asSet(options.avoidQuestionIds)
+  const recentQuestionIds = asSet(options.recentQuestionIds)
   const correctVariantIds = new Set(objectiveProgress.correctVariantIds || [])
   const attempts = objectiveProgress.attempts || 0
   const mastery = objectiveProgress.mastery || 0
   const minimumCorrectVariants = question.adaptive?.minimumCorrectVariantsForMastery ||
     objectiveProgress.minimumCorrectVariantsForMastery ||
-    2
+    MIN_CORRECT_VARIANTS_FOR_MASTERY
   const missWeight = question.adaptive?.masteryWeightOnMiss || 2
   const correctWeight = question.adaptive?.masteryWeightOnCorrect || 0.65
-  const hasSeenExactQuestion = seenQuestionIds.has(question.id)
+  const hasSeenExactQuestion = seenQuestionIds.has(question.id) ||
+    avoidQuestionIds.has(question.id) ||
+    recentQuestionIds.has(question.id)
   const hasCorrectVariant = correctVariantIds.has(variantKey(question))
   let weight = 1
 
   if (!attempts) weight += 3
-  if (attempts && mastery < 0.65) weight += (1 - mastery) * 3
-  if (objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
-  if ((objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
+  if (attempts && mastery < 0.65 && boostDrill) weight += (1 - mastery) * 3
+  if (boostDrill && objectiveProgress.lastResult === 'incorrect') weight += missWeight * 4
+  if (boostDrill && objectiveProgress.needsDrill && objectiveProgress.lastResult !== 'incorrect') weight += missWeight * 2
+  if (boostDrill && (objectiveProgress.consecutiveCorrect || 0) === 1 && correctVariantIds.size < minimumCorrectVariants) weight += 2
   if (!hasSeenExactQuestion) weight += 3
-  if (hasSeenExactQuestion) weight *= 0.35
+  if (hasSeenExactQuestion) weight *= boostDrill ? 0.35 : 0.08
   if (hasCorrectVariant) weight *= correctWeight
+  if (attempts && !boostDrill) weight *= 0.4
   if (correctVariantIds.size >= minimumCorrectVariants) weight *= 0.25
   if (objectiveProgress.lastAttemptAt) {
     const daysSinceAttempt = (Date.now() - Date.parse(objectiveProgress.lastAttemptAt)) / 86400000
@@ -243,12 +440,15 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       consecutiveCorrect: 0,
       seenQuestionIds: [],
       correctVariantIds: [],
-      minimumCorrectVariantsForMastery: question.adaptive?.minimumCorrectVariantsForMastery || 2,
+      misses: 0,
+      needsDrill: false,
+      minimumCorrectVariantsForMastery: question.adaptive?.minimumCorrectVariantsForMastery || MIN_CORRECT_VARIANTS_FOR_MASTERY,
       mastery: 0,
     }
     const isCorrect = answerMatches(question, answers[question.id] || [])
     const attempts = previous.attempts + 1
     const correct = previous.correct + (isCorrect ? 1 : 0)
+    const misses = (previous.misses || 0) + (isCorrect ? 0 : 1)
     const consecutiveCorrect = isCorrect ? previous.consecutiveCorrect + 1 : 0
     const seenQuestionIds = [...new Set([...(previous.seenQuestionIds || []), question.id])]
     const correctVariantIds = [
@@ -259,7 +459,7 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
     ]
     const minimumCorrectVariantsForMastery = question.adaptive?.minimumCorrectVariantsForMastery ||
       previous.minimumCorrectVariantsForMastery ||
-      2
+      MIN_CORRECT_VARIANTS_FOR_MASTERY
     const accuracy = correct / attempts
     const streakScore = Math.min(consecutiveCorrect, 3) / 3
     const variantScore = Math.min(correctVariantIds.length, minimumCorrectVariantsForMastery) / minimumCorrectVariantsForMastery
@@ -267,6 +467,8 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
     const mastery = correctVariantIds.length >= minimumCorrectVariantsForMastery
       ? Math.min(1, rawMastery)
       : Math.min(0.84, rawMastery)
+    const roundedMastery = Math.round(mastery * 100) / 100
+    const needsDrill = (misses > 0 || previous.needsDrill) && roundedMastery < 0.85
 
     next[objectiveId] = {
       ...previous,
@@ -275,13 +477,15 @@ export function updateObjectiveProgress(progress = {}, sessionQuestions = [], an
       domain: previous.domain || question.domain,
       attempts,
       correct,
+      misses,
       consecutiveCorrect,
       lastAttemptAt: timestamp,
       lastResult: isCorrect ? 'correct' : 'incorrect',
       seenQuestionIds,
       correctVariantIds,
+      needsDrill,
       minimumCorrectVariantsForMastery,
-      mastery: Math.round(mastery * 100) / 100,
+      mastery: roundedMastery,
     }
   })
 
@@ -360,18 +564,81 @@ export function validateQuestionSets(questionSets, questions) {
     }
 
     const counts = Object.fromEntries(Object.keys(DOMAIN_META).map(domain => [domain, 0]))
+    const responseCounts = Object.fromEntries(Object.keys(PRACTICE_RESPONSE_COUNTS).map(answerCount => [answerCount, 0]))
+    const objectiveIds = new Set()
     set.questionIds.forEach(id => {
       const question = questionById.get(id)
       if (!question) {
         issues.push(`${set.name} references missing question ${id}.`)
         return
       }
+      const objectiveId = objectiveKey(question)
+      const answers = String(responseCount(question))
+      if (objectiveIds.has(objectiveId)) {
+        issues.push(`${set.name} repeats objective ${objectiveId}.`)
+      }
+      objectiveIds.add(objectiveId)
       counts[question.domain] += 1
+      responseCounts[answers] = (responseCounts[answers] || 0) + 1
     })
 
     Object.entries(SET_DOMAIN_COUNTS).forEach(([domain, expected]) => {
       if (counts[domain] !== expected) {
         issues.push(`${set.name} should include ${expected} ${domain} questions.`)
+      }
+    })
+
+    Object.entries(PRACTICE_RESPONSE_COUNTS).forEach(([answerCount, expected]) => {
+      if (responseCounts[answerCount] !== expected) {
+        issues.push(`${set.name} should include ${expected} question(s) with ${answerCount} correct answer(s).`)
+      }
+    })
+  })
+
+  return issues
+}
+
+export function validateFullLengthExams(exams, questions) {
+  const questionById = new Map(questions.map(question => [question.id, question]))
+  const usedQuestionIds = new Set()
+  const issues = []
+
+  if (exams.length !== 6) {
+    issues.push(`Expected 6 full-length exams, found ${exams.length}.`)
+  }
+
+  exams.forEach(exam => {
+    if (exam.questionIds.length !== EXAM_QUESTION_COUNT) {
+      issues.push(`${exam.name} should contain ${EXAM_QUESTION_COUNT} questions.`)
+      return
+    }
+
+    const counts = Object.fromEntries(Object.keys(EXAM_DOMAIN_COUNTS).map(domain => [domain, 0]))
+    const objectiveIds = new Set()
+
+    exam.questionIds.forEach(id => {
+      const question = questionById.get(id)
+      if (!question) {
+        issues.push(`${exam.name} references missing question ${id}.`)
+        return
+      }
+
+      if (usedQuestionIds.has(id)) {
+        issues.push(`${exam.name} reuses question ${id} from another full-length exam.`)
+      }
+      usedQuestionIds.add(id)
+
+      const objectiveId = objectiveKey(question)
+      if (objectiveIds.has(objectiveId)) {
+        issues.push(`${exam.name} repeats objective ${objectiveId}.`)
+      }
+      objectiveIds.add(objectiveId)
+      counts[question.domain] += 1
+    })
+
+    Object.entries(EXAM_DOMAIN_COUNTS).forEach(([domain, expected]) => {
+      if (counts[domain] !== expected) {
+        issues.push(`${exam.name} should include ${expected} ${domain} questions.`)
       }
     })
   })
